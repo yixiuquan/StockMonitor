@@ -6,8 +6,6 @@ import com.stock.utils.HttpUtils;
 import com.stock.vo.SingleStock;
 import com.stock.vo.StockSpeed;
 import org.apache.commons.collections4.CollectionUtils;
-import org.apache.flink.api.java.DataSet;
-import org.apache.flink.api.java.ExecutionEnvironment;
 
 import java.util.*;
 import java.util.concurrent.Executors;
@@ -17,6 +15,10 @@ import java.util.concurrent.TimeUnit;
 public class StockMonitorMain {
     // 用于存储上一次的资金流入数据
     private static Map<String, Double> previousInflowMap = new HashMap<>();
+    // 用于存储上一次的资金流出数据
+    private static Map<String, Double> previousOutflowMap = new HashMap<>();
+    // 用于存储上一次的成交量数据
+    private static Map<String, Double> previousVolumeMap = new HashMap<>();
     // 用于存储每只股票的名称
     private static Map<String, String> stockNameMap = new HashMap<>();
 
@@ -82,64 +84,213 @@ public class StockMonitorMain {
         // 当前时间
         long currentTime = System.currentTimeMillis();
 
-        // 用于存储当前资金流入数据
+        // 用于存储当前数据
         Map<String, Double> currentInflowMap = new HashMap<>();
-        // 用于存储计算结果
+        Map<String, Double> currentOutflowMap = new HashMap<>();
+        Map<String, Double> currentVolumeMap = new HashMap<>();
         List<StockSpeed> speedResults = new ArrayList<>();
 
-        for (int i = 0; i < singleStockList.size(); i++) {
-            SingleStock singleStock = singleStockList.get(i);
+        // 第一轮循环：计算基础数据和趋势分数
+        for (SingleStock singleStock : singleStockList) {
             String code = singleStock.getCode();
             String name = singleStock.getName();
-            // 计算总资金净流入（主力 + 超大单 + 大单 + 中单 + 小单）
-            double totalInflow = singleStock.getZhuliNetInflow() +  // 主力净流入
-                    singleStock.getChaodadanNetInflow() +    // 超大单净流入
-                    singleStock.getBigdanNetInflow() +    // 大单净流入
-                    singleStock.getZhongdanNetInflow() +    // 中单净流入
-                    singleStock.getXiaodanNetInflow();     // 小单净流入
+            
+            // 计算流入金额（正值部分）
+            double totalInflow = Math.max(singleStock.getZhuliNetInflow(), 0) +  
+                    Math.max(singleStock.getChaodadanNetInflow(), 0) +    
+                    Math.max(singleStock.getBigdanNetInflow(), 0) +    
+                    Math.max(singleStock.getZhongdanNetInflow(), 0) +    
+                    Math.max(singleStock.getXiaodanNetInflow(), 0);
+                    
+            // 计算流出金额（负值部分的绝对值）
+            double totalOutflow = Math.abs(Math.min(singleStock.getZhuliNetInflow(), 0)) +  
+                    Math.abs(Math.min(singleStock.getChaodadanNetInflow(), 0)) +    
+                    Math.abs(Math.min(singleStock.getBigdanNetInflow(), 0)) +    
+                    Math.abs(Math.min(singleStock.getZhongdanNetInflow(), 0)) +    
+                    Math.abs(Math.min(singleStock.getXiaodanNetInflow(), 0));
 
+            // 计算成交量 (流入 + 流出)
+            double volume = totalInflow + totalOutflow;
+            
             currentInflowMap.put(code, totalInflow);
+            currentOutflowMap.put(code, totalOutflow);
+            currentVolumeMap.put(code, volume);
             stockNameMap.put(code, name);
 
-            // 计算速度
-            if (previousInflowMap.containsKey(code)) {
+            // 计算速度和趋势
+            if (previousInflowMap.containsKey(code) && previousOutflowMap.containsKey(code) && previousVolumeMap.containsKey(code)) {
                 double inflowDiff = totalInflow - previousInflowMap.get(code);
+                double outflowDiff = totalOutflow - previousOutflowMap.get(code);
+                double volumeDiff = volume - previousVolumeMap.get(code);
+                
                 // 计算速度（万元/秒）
-                double speed = inflowDiff / 10.0; // 10秒间隔
-                if (speed > 100) {
-                    speedResults.add(new StockSpeed(code, name, speed));
+                double inSpeed = inflowDiff / 10.0;  // 10秒间隔
+                double outSpeed = outflowDiff / 10.0;
+                double volumeSpeed = volumeDiff / 10.0;
+
+                // 计算上涨趋势分数 (0-100分)
+                double rankUpTrendScore = calculateUpTrendScore(
+                    inSpeed,
+                    outSpeed,
+                    volumeSpeed,
+                    singleStock.getChangePercent(),
+                    singleStock.getZhuliNetInflowPercent(),
+                    singleStock.getChaodadanNetInflowPercent()
+                );
+
+                // 计算下跌趋势分数 (0-100分)
+                double rankDownTrendScore = calculateDownTrendScore(
+                    inSpeed,
+                    outSpeed,
+                    volumeSpeed,
+                    singleStock.getChangePercent(),
+                    singleStock.getZhuliNetInflowPercent(),
+                    singleStock.getChaodadanNetInflowPercent()
+                );
+
+                // 只添加有显著资金流动的股票
+                if (Math.abs(inSpeed) > 1500 || Math.abs(outSpeed) > 1500) {
+                    speedResults.add(new StockSpeed(
+                            code, 
+                            name, 
+                            inSpeed, 
+                            outSpeed,
+                            singleStock.getChange(),
+                            singleStock.getChangePercent(),
+                            volumeSpeed,
+                            rankUpTrendScore,
+                            rankDownTrendScore
+                    ));
                 }
             }
         }
 
         // 更新上一次的数据
         previousInflowMap = currentInflowMap;
-        if (CollectionUtils.isNotEmpty(speedResults)){
-            // 按速度排序并输出结果
-            Collections.sort(speedResults, (a, b) -> Double.compare(Math.abs(b.getSpeed()), Math.abs(a.getSpeed())));
+        previousOutflowMap = currentOutflowMap;
+        previousVolumeMap = currentVolumeMap;
+
+        // 输出更新时间
+        System.out.println("\n更新时间: " + new Date());
+        
+        if (CollectionUtils.isNotEmpty(speedResults)) {
+            // 按照上涨趋势分数排序
+            Collections.sort(speedResults, (a, b) -> 
+                Double.compare(b.getRankUpTrendScore(), a.getRankUpTrendScore())
+            );
 
             // 清屏
             System.out.print("\033[H\033[2J");
             System.out.flush();
 
             // 输出表头
-            System.out.printf("%-10s %-10s %15s%n", "代码", "名称", "资金流速(万元/秒)");
-            System.out.println("----------------------------------------");
+            System.out.printf("%-8s %-8s %12s %12s %10s %8s %12s %8s %8s%n", 
+                "代码", "名称", "流入速度", "流出速度", "涨跌额", "涨跌幅", "成交速度", "上涨分", "下跌分");
+            System.out.println("------------------------------------------------------------------------------------");
 
             // 输出结果
             for (StockSpeed result : speedResults) {
-                if (result.getSpeed() > 100) {
-                    System.out.printf("%-10s %-10s %15.2f%n",
-                            result.getCode(),
-                            result.getName(),
-                            result.getSpeed());
+                if (result.getChangePercent()>9.5) {
+                    continue;
                 }
+                System.out.printf("%-8s %-8s %12.2f %12.2f %10.2f %8.2f%% %12.2f %8.2f %8.2f%n",
+                        result.getCode(),
+                        result.getName(),
+                        result.getInSpeed(),
+                        result.getOutSpeed(),
+                        result.getChange(),
+                        result.getChangePercent(),
+                        result.getVolume(),
+                        result.getRankUpTrendScore(),
+                        result.getRankDownTrendScore()
+                );
             }
-
-            // 输出更新时间
-            System.out.println("\n更新时间: " + new Date());
         } else {
             System.out.println("无满足需求的更新数据");
         }
+    }
+
+    /**
+     * 计算上涨趋势分数
+     * @return 0-100的分数
+     */
+    private static double calculateUpTrendScore(
+            double inSpeed, 
+            double outSpeed, 
+            double volumeSpeed,
+            double changePercent,
+            double zhuliNetInflowPercent,
+            double chaodadanNetInflowPercent) {
+        
+        double score = 0;
+        
+        // 1. 资金流入速度权重 30分
+        if (inSpeed > outSpeed) {
+            score += 30 * (inSpeed / (inSpeed + outSpeed));
+        }
+        
+        // 2. 涨跌幅权重 20分
+        if (changePercent > 0) {
+            score += Math.min(20, changePercent * 2);
+        }
+        
+        // 3. 主力净流入占比权重 25分
+        if (zhuliNetInflowPercent > 0) {
+            score += Math.min(25, zhuliNetInflowPercent * 2.5);
+        }
+        
+        // 4. 超大单净流入占比权重 15分
+        if (chaodadanNetInflowPercent > 0) {
+            score += Math.min(15, chaodadanNetInflowPercent * 1.5);
+        }
+        
+        // 5. 成交量变化权重 10分
+        if (volumeSpeed > 0) {
+            score += Math.min(10, volumeSpeed / 1000);
+        }
+        
+        return Math.min(100, score);
+    }
+
+    /**
+     * 计算下跌趋势分数
+     * @return 0-100的分数
+     */
+    private static double calculateDownTrendScore(
+            double inSpeed, 
+            double outSpeed, 
+            double volumeSpeed,
+            double changePercent,
+            double zhuliNetInflowPercent,
+            double chaodadanNetInflowPercent) {
+        
+        double score = 0;
+        
+        // 1. 资金流出速度权重 30分
+        if (outSpeed > inSpeed) {
+            score += 30 * (outSpeed / (inSpeed + outSpeed));
+        }
+        
+        // 2. 涨跌幅权重 20分
+        if (changePercent < 0) {
+            score += Math.min(20, Math.abs(changePercent * 2));
+        }
+        
+        // 3. 主力净流入占比权重 25分
+        if (zhuliNetInflowPercent < 0) {
+            score += Math.min(25, Math.abs(zhuliNetInflowPercent * 2.5));
+        }
+        
+        // 4. 超大单净流入占比权重 15分
+        if (chaodadanNetInflowPercent < 0) {
+            score += Math.min(15, Math.abs(chaodadanNetInflowPercent * 1.5));
+        }
+        
+        // 5. 成交量变化权重 10分
+        if (volumeSpeed > 0) {
+            score += Math.min(10, volumeSpeed / 1000);
+        }
+        
+        return Math.min(100, score);
     }
 }
