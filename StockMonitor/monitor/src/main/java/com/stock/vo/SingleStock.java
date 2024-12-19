@@ -4,23 +4,24 @@ import lombok.Data;
 
 @Data
 public class SingleStock {
-    private String code;                    // 股票代码
-    private String name;                    // 股票名称
-    private double currentPrice;            // 当前价格
-    private double zhuliNetInflow;         // 今日主力净流入
-    private double zhuliNetInflowPercent;  // 今日主力净流入百分比
-    private double totalNetInflow;          // 总净流入
-    private double totalNetInflowPercent;   // 总净流入百分比
-    private double chaodadanNetInflow;       // 超大大单净流入
+    private String code;                      // 股票代码
+    private String name;                      // 股票名称
+    private double currentPrice;              // 当前价格
+    private double zhuliNetInflow;            // 今日主力净流入
+    private double zhuliNetInflowPercent;     // 今日主力净流入百分比
+    private double totalNetInflow;            // 总净流入
+    private double totalNetInflowPercent;     // 总净流入百分比
+    private double chaodadanNetInflow;        // 超大大单净流入
     private double chaodadanNetInflowPercent; // 超大大单净流入百分比
-    private double bigdanNetInflow;         // 大单净流入
-    private double bigdanNetInflowPercent;  // 大单净流入百分比
-    private double zhongdanNetInflow;       // 中单净流入
-    private double zhongdanNetInflowPercent; // 中单净流入百分比
-    private double xiaodanNetInflow;        // 小单净流入
-    private double xiaodanNetInflowPercent; // 小单净流入百分比
-    private double change;                  // 涨跌额
-    private double changePercent;           // 涨跌幅
+    private double bigdanNetInflow;           // 大单净流入
+    private double bigdanNetInflowPercent;    // 大单净流入百分比
+    private double zhongdanNetInflow;         // 中单净流入
+    private double zhongdanNetInflowPercent;  // 中单净流入百分比
+    private double xiaodanNetInflow;          // 小单净流入
+    private double xiaodanNetInflowPercent;   // 小单净流入百分比
+    private double change;                    // 涨跌额
+    private double changePercent;             // 涨跌幅
+    private double totalVolume;               // 总成交量
 //    private double openPrice;               // 开盘价
 //    private double highPrice;               // 最高价
 //    private double lowPrice;                // 最低价
@@ -117,5 +118,13 @@ public class SingleStock {
 //    private double profitMargin5Years;      // 5年平均利润率
 
     public SingleStock() {
+    }
+
+    public double getTotalVolume() {
+        return totalVolume;
+    }
+
+    public void setTotalVolume(double totalVolume) {
+        this.totalVolume = totalVolume;
     }
 }

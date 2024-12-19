@@ -46,7 +46,7 @@ public class StockMonitorMain {
         JSONObject dataJson = JSONObject.parseObject(dataStr);
         JSONObject dataJSONObject = dataJson.getJSONObject("data");
         JSONArray dataJSONArray = dataJSONObject.getJSONArray("diff");
-        Integer total = dataJSONObject.getInteger("total");
+        //Integer total = dataJSONObject.getInteger("total");
         List<SingleStock> singleStockList = new ArrayList<>();
         for (int i = 0; i < dataJSONArray.size(); i++) {
             JSONObject jsonObject = dataJSONArray.getJSONObject(i);
@@ -81,8 +81,6 @@ public class StockMonitorMain {
             singleStock.setXiaodanNetInflowPercent(jsonObject.getDouble("f87"));
             singleStockList.add(singleStock);
         }
-        // 当前时间
-        long currentTime = System.currentTimeMillis();
 
         // 用于存储当前数据
         Map<String, Double> currentInflowMap = new HashMap<>();
