@@ -8,6 +8,7 @@ import com.stock.vo.DailyStockData;
 import com.stock.vo.SingleStock;
 import com.stock.vo.StockSpeed;
 import com.stock.ui.StockMonitorUI;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 
@@ -16,10 +17,14 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
+@Slf4j
 public class StockMonitorMain2 {
     /**
      * 静态Map集合用于存储历史数据，实现数据的连续监控和计算
@@ -48,18 +53,41 @@ public class StockMonitorMain2 {
     private static final int ANALYSIS_PERIOD = 60;  // 分析周期（秒）
     private static final int SAMPLES_PER_PERIOD = ANALYSIS_PERIOD / SAMPLE_INTERVAL;  // 每个周期的采样次数
 
-    // 添加一分钟数据存储
+    // 添加分钟数据存储
     private static Map<String, List<Double>> minutePrices = new HashMap<>();
     private static Map<String, List<Double>> minuteInflows = new HashMap<>();
     private static Map<String, List<Double>> minuteOutflows = new HashMap<>();
     private static Map<String, List<Double>> minuteVolumes = new HashMap<>();
+
+    // 添加一分钟数据缓存
+    private static Map<String, List<SingleStock>> minuteStockCache = new HashMap<>();
+    private static Map<String, List<Double>> minuteInflowCache = new HashMap<>();
+    private static Map<String, List<Double>> minuteOutflowCache = new HashMap<>();
 
     // 添加历史数据缓存
     private static Map<String, List<DailyStockData>> historicalData = new HashMap<>();
 
     private static StockMonitorUI ui;
 
+    // 添加数据保存线程池
+    private static final ExecutorService saveDataExecutor = Executors.newFixedThreadPool(4);
+
     public static void main(String[] args) throws Exception {
+        // 添加关闭钩子
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("正在关闭应用...");
+            saveDataExecutor.shutdown();
+            try {
+                if (!saveDataExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    saveDataExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                saveDataExecutor.shutdownNow();
+            }
+            DBUtils.shutdown();
+            System.out.println("应用已关闭");
+        }));
+        
         // 启动JavaFX界面
         new Thread(() -> {
             StockMonitorUI.launch(StockMonitorUI.class, args);
@@ -68,11 +96,13 @@ public class StockMonitorMain2 {
         // 等待UI初始化完成
         Thread.sleep(2000);
 
-        // 加载历史数据
-        loadHistoricalData();
+        new Thread(() -> {
+            // 加载历史数据
+            loadHistoricalData();
+        }).start();
         
         // 创建定时执行器
-        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
 
         // 每10秒执行一次数据刷新
         scheduler.scheduleAtFixedRate(() -> {
@@ -95,7 +125,36 @@ public class StockMonitorMain2 {
      * 2. 使用Math.max提取每个类型中的正值部分（净流入为正的部分）
      */
     private static void fetchAndCalculateSpeed() throws Exception {
-        String dataUrl = "https://push2.eastmoney.com/api/qt/clist/get?cb=jQuery1123044856734513874996_1732590961078&fid=f62&po=1&pz=50&pn=1&np=1&fltt=2&invt=2&ut=b2884a393a59ad64002292a3e90d46a5&fs=m%3A0%2Bt%3A6%2Bf%3A!2%2Cm%3A0%2Bt%3A13%2Bf%3A!2%2Cm%3A0%2Bt%3A80%2Bf%3A!2%2Cm%3A1%2Bt%3A2%2Bf%3A!2%2Cm%3A1%2Bt%3A23%2Bf%3A!2%2Cm%3A0%2Bt%3A7%2Bf%3A!2%2Cm%3A1%2Bt%3A3%2Bf%3A!2&fields=f12%2Cf14%2Cf2%2Cf3%2Cf62%2Cf184%2Cf66%2Cf69%2Cf72%2Cf75%2Cf78%2Cf81%2Cf84%2Cf87%2Cf204%2Cf205%2Cf124%2Cf1%2Cf13";
+        // 判断当前时间是否在交易时间内
+        Calendar now = Calendar.getInstance();
+        int hour = now.get(Calendar.HOUR_OF_DAY);
+        int minute = now.get(Calendar.MINUTE);
+        int currentTime = hour * 100 + minute;  // 例如：9:30 = 930
+
+        // 检查是否在交易时间内
+        boolean isTradeTime = (currentTime >= 930 && currentTime <= 1130) ||  // 上午交易时间
+                (currentTime >= 1300 && currentTime <= 1500);     // 下午交易时间
+
+        if (!isTradeTime) {
+            return;
+        }
+        String dataUrl = "https://push2.eastmoney.com/api/qt/clist/get?" +
+                "cb=jQuery1123044856734513874996_1732590961078" +
+                "&fid=f62" +
+                "&po=1" +
+                "&pz=5300" +
+                "&pn=1" +
+                "&np=1" +
+                "&fltt=2" +
+                "&invt=2" +
+                "&ut=b2884a393a59ad64002292a3e90d46a5" +
+                "&fs=m%3A0%2Bt%3A6%2Bf%3A!2%2Cm%3A0%2Bt%3A13%2Bf%3A!2%2Cm%3A0%2Bt%3A80%2Bf%3A!2%2Cm%3A1%2Bt%3A2%2Bf%3A!2%2Cm%3A1%2Bt%3A23%2Bf%3A!2%2Cm%3A0%2Bt%3A7%2Bf%3A!2%2Cm%3A1%2Bt%3A3%2Bf%3A!2&fields=f12%2Cf14%2Cf2%2Cf3%2Cf62%2Cf184%2Cf66%2Cf69%2Cf72%2Cf75%2Cf78%2Cf81%2Cf84%2Cf87%2Cf204%2Cf205%2Cf124%2Cf1%2Cf13";
+
+        // 用于存储当前数据
+        Map<String, Double> currentInflowMap = new HashMap<>();
+        Map<String, Double> currentOutflowMap = new HashMap<>();
+        Map<String, Double> currentVolumeMap = new HashMap<>();
+        List<StockSpeed> speedResults = new ArrayList<>();
 
         // 获取当前数据
         List<String> httpResuList = HttpUtils.fetchDataFromUrl(dataUrl);
@@ -104,119 +163,85 @@ public class StockMonitorMain2 {
         JSONObject dataJson = JSONObject.parseObject(dataStr);
         JSONObject dataJSONObject = dataJson.getJSONObject("data");
         JSONArray dataJSONArray = dataJSONObject.getJSONArray("diff");
-        //Integer total = dataJSONObject.getInteger("total");
-        List<SingleStock> singleStockList = new ArrayList<>();
+
         for (int i = 0; i < dataJSONArray.size(); i++) {
             JSONObject jsonObject = dataJSONArray.getJSONObject(i);
             if (StringUtils.isEmpty(jsonObject.getString("f12")) || "-".equals(jsonObject.getString("f2"))) {
                 continue;
             }
+
+            // 检查必要字段是否存在且有效
             SingleStock singleStock = new SingleStock();
             //股票代码
             singleStock.setCode(jsonObject.getString("f12"));
             //股票名称
             singleStock.setName(jsonObject.getString("f14"));
             //当前价格
-            singleStock.setCurrentPrice(jsonObject.getDouble("f2"));
+            singleStock.setCurrentPrice(parseDouble(jsonObject, "f2", 0.0));
             //今日涨跌幅
-            singleStock.setChangePercent(jsonObject.getDouble("f3"));
+            singleStock.setChangePercent(parseDouble(jsonObject, "f3", 0.0));
             //今日主力净流入
-            singleStock.setZhuliNetInflow(jsonObject.getDouble("f62"));
+            singleStock.setZhuliNetInflow(parseDouble(jsonObject, "f62", 0.0));
             //今日主力净流入百分比
-            singleStock.setZhuliNetInflowPercent(jsonObject.getDouble("f184"));
+            singleStock.setZhuliNetInflowPercent(parseDouble(jsonObject, "f184", 0.0));
             //今日超大单净流入
-            singleStock.setChaodadanNetInflow(jsonObject.getDouble("f66"));
+            singleStock.setChaodadanNetInflow(parseDouble(jsonObject, "f66", 0.0));
             //今日超大单净流入百分比
-            singleStock.setChaodadanNetInflowPercent(jsonObject.getDouble("f69"));
+            singleStock.setChaodadanNetInflowPercent(parseDouble(jsonObject, "f69", 0.0));
             //今日大单净流入
-            singleStock.setBigdanNetInflow(jsonObject.getDouble("f72"));
+            singleStock.setBigdanNetInflow(parseDouble(jsonObject, "f72", 0.0));
             //今日大单净流入百分比
-            singleStock.setBigdanNetInflowPercent(jsonObject.getDouble("f75"));
+            singleStock.setBigdanNetInflowPercent(parseDouble(jsonObject, "f75", 0.0));
             //今日中单净流入
-            singleStock.setZhongdanNetInflow(jsonObject.getDouble("f78"));
+            singleStock.setZhongdanNetInflow(parseDouble(jsonObject, "f78", 0.0));
             //今日中单净流入百分比
-            singleStock.setZhongdanNetInflowPercent(jsonObject.getDouble("f81"));
+            singleStock.setZhongdanNetInflowPercent(parseDouble(jsonObject, "f81", 0.0));
             //今日小单净流入
-            singleStock.setXiaodanNetInflow(jsonObject.getDouble("f84"));
+            singleStock.setXiaodanNetInflow(parseDouble(jsonObject, "f84", 0.0));
             //今日小单净流入百分比
-            singleStock.setXiaodanNetInflowPercent(jsonObject.getDouble("f87"));
-            singleStockList.add(singleStock);
-        }
+            singleStock.setXiaodanNetInflowPercent(parseDouble(jsonObject, "f87", 0.0));
 
-        // 用于存储当前数据
-        Map<String, Double> currentInflowMap = new HashMap<>();
-        Map<String, Double> currentOutflowMap = new HashMap<>();
-        Map<String, Double> currentVolumeMap = new HashMap<>();
-        List<StockSpeed> speedResults = new ArrayList<>();
-
-        // 第一轮循环：计算基础数据和趋势分数
-        for (SingleStock singleStock : singleStockList) {
-            String code = singleStock.getCode();
-            String name = singleStock.getName();
-
-            /**
-             * 计算总流入金额：
-             * 1. 分别获取主力、超大单、大单、中单、小单的净流入
-             * 2. 使用Math.max提取每个类型中的值部分（净流入为正的部分）
-             * 3. 将所有正值相加得到总流入金额
-             * 计算公式：totalInflow = Σ max(各类型净流入, 0)
-             */
+            // 计算总流入金额
             double totalInflow = Math.max(singleStock.getZhuliNetInflow(), 0) +
                     Math.max(singleStock.getChaodadanNetInflow(), 0) +
                     Math.max(singleStock.getBigdanNetInflow(), 0) +
                     Math.max(singleStock.getZhongdanNetInflow(), 0) +
                     Math.max(singleStock.getXiaodanNetInflow(), 0);
-            totalInflow = totalInflow / 10000;
 
-            /**
-             * 计算总流出金额：
-             * 1. 分别获取主力、超大单、大单、中单、小单的净流入
-             * 2. 使用Math.min提取每个类型中的负值部分
-             * 3. 取绝对值后相加得到总流出金额
-             * 单位：万元
-             * 计算公式：totalOutflow = Σ |min(各类型净流入, 0)|
-             */
+            // 计算总流出金额
             double totalOutflow = Math.abs(Math.min(singleStock.getZhuliNetInflow(), 0)) +
                     Math.abs(Math.min(singleStock.getChaodadanNetInflow(), 0)) +
                     Math.abs(Math.min(singleStock.getBigdanNetInflow(), 0)) +
                     Math.abs(Math.min(singleStock.getZhongdanNetInflow(), 0)) +
                     Math.abs(Math.min(singleStock.getXiaodanNetInflow(), 0));
-            totalOutflow = totalOutflow / 10000;
 
-            /**
-             * 计算总成交量：
-             * 总成交量 = 流入金额 + 流出金额
-             * 这代表了市场的总体活跃度
-             */
+            // 计算总成交量
             double volume = totalInflow + totalOutflow;
 
-            currentInflowMap.put(code, totalInflow);
-            currentOutflowMap.put(code, totalOutflow);
-            currentVolumeMap.put(code, volume);
-            stockNameMap.put(code, name);
+            // 更新当前数据
+            currentInflowMap.put(singleStock.getCode(), totalInflow);
+            currentOutflowMap.put(singleStock.getCode(), totalOutflow);
+            currentVolumeMap.put(singleStock.getCode(), volume);
+            stockNameMap.put(singleStock.getCode(), singleStock.getName());
 
-            /**
-             * 速度计算逻辑：
-             * 1. 计算两次采样间的差值（当前值 - 上次值）
-             * 2. 除以时间间隔（10秒）得到每秒的变化率
-             *
-             * 资金流入速度(inSpeed) = (当前流入 - 次流入) / 10
-             * 资金流出速度(outSpeed) = (当前流出 - 上次流出) / 10
-             * 成交量变化速度(volumeSpeed) = (当前成交量 - 上次成交量) / 10
-             *
-             * 单位：万元/秒
-             */
-            if (previousInflowMap.containsKey(code) && previousOutflowMap.containsKey(code) && previousVolumeMap.containsKey(code)) {
-                double inflowDiff = totalInflow - previousInflowMap.get(code);
-                double outflowDiff = totalOutflow - previousOutflowMap.get(code);
-                double volumeDiff = volume - previousVolumeMap.get(code);
+            if (previousInflowMap.containsKey(singleStock.getCode()) && previousOutflowMap.containsKey(singleStock.getCode())
+                    && previousVolumeMap.containsKey(singleStock.getCode())) {
+                double inflowDiff = totalInflow - previousInflowMap.get(singleStock.getCode());
+                double outflowDiff = totalOutflow - previousOutflowMap.get(singleStock.getCode());
+                double volumeDiff = volume - previousVolumeMap.get(singleStock.getCode());
 
                 // 计算速度（万元/秒）
-                double inSpeed = inflowDiff / 10.0;  // 10秒间隔
-                double outSpeed = outflowDiff / 10.0;
-                double volumeSpeed = volumeDiff / 10.0;
+                double inSpeed = inflowDiff / SAMPLE_INTERVAL;
+                double outSpeed = outflowDiff / SAMPLE_INTERVAL;
+                double volumeSpeed = volumeDiff / SAMPLE_INTERVAL;
 
-                // 计算上涨趋势分数 (0-100分)
+                // 更新分钟数据
+                updateMinuteData(singleStock.getCode(), singleStock.getCurrentPrice(), totalInflow, totalOutflow, volume);
+
+                // 计算动量分数
+                double momentumScore = calculateMomentumScore(singleStock, inSpeed, outSpeed);
+
+                // 计算趋势分数
                 double rankUpTrendScore = calculateUpTrendScore(
                         inSpeed,
                         outSpeed,
@@ -224,10 +249,9 @@ public class StockMonitorMain2 {
                         singleStock.getChangePercent(),
                         singleStock.getZhuliNetInflowPercent(),
                         singleStock.getChaodadanNetInflowPercent(),
-                        code
+                        singleStock.getCode()
                 );
 
-                // 计算下跌趋势分数 (0-100分)
                 double rankDownTrendScore = calculateDownTrendScore(
                         inSpeed,
                         outSpeed,
@@ -237,11 +261,11 @@ public class StockMonitorMain2 {
                         singleStock.getChaodadanNetInflowPercent()
                 );
 
-                // 只添加有显著资金流动的股票
-                if (Math.abs(inSpeed) > 10) {
+                // 添加到结果列表
+                if (Math.abs(inSpeed) > 0 || Math.abs(outSpeed) > 0) {
                     StockSpeed speedResult = new StockSpeed(
-                            code,
-                            name,
+                            singleStock.getCode(),
+                            singleStock.getName(),
                             inSpeed,
                             outSpeed,
                             singleStock.getChange(),
@@ -256,22 +280,19 @@ public class StockMonitorMain2 {
                     speedResult.setZhuliNetInflowPercent(singleStock.getZhuliNetInflowPercent());
                     speedResult.setBigOrderNetInflow(singleStock.getBigdanNetInflow());
                     speedResult.setBigOrderNetInflowPercent(singleStock.getBigdanNetInflowPercent());
-                    speedResult.setMomentumScore(calculateMomentumScore(singleStock, inSpeed, outSpeed));
+                    speedResult.setMomentumScore(momentumScore);
                     speedResult.setVolume(volume);
-                    speedResult.setTurnoverRate(volume / singleStock.getCurrentPrice() / 10000);
+                    speedResult.setTurnoverRate(volume / (singleStock.getCurrentPrice() * 100));
                     speedResult.setAvgPrice(singleStock.getCurrentPrice());
                     speedResult.setMacd(calculateTechnicalScore(singleStock));
-                    speedResult.setRsi(calculateTechnicalScore(singleStock));
-                    speedResult.setKdj(calculateTechnicalScore(singleStock));
+                    speedResult.setRsi(calculateRSI(singleStock.getCode()));
+                    speedResult.setKdj(calculateKDJ(singleStock.getCode()));
                     speedResults.add(speedResult);
                 }
+
+                // 保存数据到数据库
+                saveStockData(singleStock, totalInflow, totalOutflow);
             }
-
-            // 更新一分钟数据
-            updateMinuteData(code, singleStock.getCurrentPrice(), totalInflow, totalOutflow, volume);
-
-            // 保存数据到数据库
-            saveStockData(singleStock, totalInflow, totalOutflow);
         }
 
         // 更新上一次的数据
@@ -329,10 +350,9 @@ public class StockMonitorMain2 {
             double zhuliNetInflowPercent,
             double chaodadanNetInflowPercent,
             String code) {
-        
         double score = 0;
         
-        // 获取当天累计数据
+        // 获取当日累计数据
         DailyStockData dailyData = getDailyData(code);
         double dayInflow = dailyData.getInflow();
         double dayOutflow = dailyData.getOutflow();
@@ -357,12 +377,12 @@ public class StockMonitorMain2 {
         }
         
         // 1. 实时资金流向权重 (20分)
-        if (inSpeed > outSpeed) {
+        if (inSpeed > outSpeed && (inSpeed + outSpeed) > 0) {
             score += 20 * (inSpeed / (inSpeed + outSpeed));
         }
         
         // 2. 当天累计资金向权重 (20分)
-        if (dayInflow > dayOutflow) {
+        if (dayInflow > dayOutflow && (dayInflow + dayOutflow) > 0) {
             score += 20 * (dayInflow / (dayInflow + dayOutflow));
         }
         
@@ -370,12 +390,12 @@ public class StockMonitorMain2 {
         score += historicalScore;
         
         // 4. 涨跌幅权重 (20分)
-        if (changePercent > 0) {
+        if (changePercent > 0 && !Double.isNaN(changePercent)) {
             score += Math.min(20, changePercent * 2);
         }
         
         // 5. 主力净流入占比权重 (20分)
-        if (zhuliNetInflowPercent > 0) {
+        if (zhuliNetInflowPercent > 0 && !Double.isNaN(zhuliNetInflowPercent)) {
             score += Math.min(20, zhuliNetInflowPercent * 2);
         }
         
@@ -417,27 +437,27 @@ public class StockMonitorMain2 {
         double score = 0;
 
         // 1. 资金流出速度权重 30分
-        if (outSpeed > inSpeed) {
+        if (outSpeed > inSpeed && (inSpeed + outSpeed) > 0) {
             score += 30 * (outSpeed / (inSpeed + outSpeed));
         }
 
         // 2. 涨跌幅权重 20分
-        if (changePercent < 0) {
+        if (changePercent < 0 && !Double.isNaN(changePercent)) {
             score += Math.min(20, Math.abs(changePercent * 2));
         }
 
         // 3. 主力净流入占比权重 25分
-        if (zhuliNetInflowPercent < 0) {
+        if (zhuliNetInflowPercent < 0 && !Double.isNaN(zhuliNetInflowPercent)) {
             score += Math.min(25, Math.abs(zhuliNetInflowPercent * 2.5));
         }
 
         // 4. 超大单净流入占比权重 15分
-        if (chaodadanNetInflowPercent < 0) {
+        if (chaodadanNetInflowPercent < 0 && !Double.isNaN(chaodadanNetInflowPercent)) {
             score += Math.min(15, Math.abs(chaodadanNetInflowPercent * 1.5));
         }
 
         // 5. 成交量变化权重 10分
-        if (volumeSpeed > 0) {
+        if (volumeSpeed > 0 && !Double.isNaN(volumeSpeed)) {
             score += Math.min(10, volumeSpeed / 1000);
         }
 
@@ -445,28 +465,24 @@ public class StockMonitorMain2 {
     }
 
     private static double calculateMomentumScore(SingleStock stock, double inSpeed, double outSpeed) {
-        /**
-         * 动量评分计算 (0-100分)
-         * 1. 价格动量 (40分)：
-         *    - 基于涨跌幅和价格变化速度
-         * 2. 资金动量 (40分)：
-         *    - 基于净流入速度和累计净流入
-         * 3. 成交量动量 (20分)：
-         *    - 基于成交量变化和换手率
-         */
         double score = 0;
 
         // 1. 价格动量
-        double priceScore = Math.min(40, Math.abs(stock.getChangePercent()) * 4);
+        if (!Double.isNaN(stock.getChangePercent())) {
+            score += Math.min(40, Math.abs(stock.getChangePercent()) * 4);
+        }
 
         // 2. 资金动量
         double netSpeed = inSpeed - outSpeed;
-        double fundScore = 40 * (netSpeed / (Math.abs(inSpeed) + Math.abs(outSpeed)));
+        if ((Math.abs(inSpeed) + Math.abs(outSpeed)) > 0) {
+            score += 40 * (netSpeed / (Math.abs(inSpeed) + Math.abs(outSpeed)));
+        }
 
         // 3. 成交量动量
-        double volumeScore = Math.min(20, (inSpeed + outSpeed) / 1000);
+        if (!Double.isNaN(inSpeed) && !Double.isNaN(outSpeed)) {
+            score += Math.min(20, (inSpeed + outSpeed) / 1000);
+        }
 
-        score = priceScore + fundScore + volumeScore;
         return Math.max(0, Math.min(100, score));
     }
 
@@ -546,7 +562,7 @@ public class StockMonitorMain2 {
 
     /**
      * 计算KDJ指标
-     * K = 2/3 × 前一日K值 + 1/3 × 当日RSV
+     * K = 2/3 × 前日K值 + 1/3 × 当日RSV
      * D = 2/3 × 前一日D值 + 1/3 × 当日K值
      * J = 3 × 当日K值 - 2 × 当日D值
      */
@@ -688,7 +704,7 @@ public class StockMonitorMain2 {
             rsiHistory.computeIfAbsent(code, k -> new ArrayList<>()).add(rsi);
             kdjHistory.computeIfAbsent(code, k -> new ArrayList<>()).add(kdj);
 
-            // 维护历史数据大小
+            // 维护历史数据小
             if (macdHistory.get(code).size() > HISTORY_SIZE) {
                 macdHistory.get(code).remove(0);
             }
@@ -775,7 +791,7 @@ public class StockMonitorMain2 {
             minutePrices.get(code).remove(0);
         }
 
-        // 更新资金流入
+        // 更新资金入
         minuteInflows.computeIfAbsent(code, k -> new ArrayList<>()).add(inflow);
         if (minuteInflows.get(code).size() > SAMPLES_PER_PERIOD) {
             minuteInflows.get(code).remove(0);
@@ -799,40 +815,126 @@ public class StockMonitorMain2 {
     private static void saveStockData(SingleStock stock, double totalInflow, double totalOutflow) {
         Connection conn = null;
         PreparedStatement ps = null;
+        ResultSet rs = null;
         try {
             conn = DBUtils.getConnection();
-            String sql = "INSERT INTO single_stock_data (code, name, current_price, change_amount, change_percent, " +
+            List<SingleStock> stocks = new ArrayList<>();
+            stocks.add(stock);
+            saveMinuteData(stock.getCode(), stocks, totalInflow, totalOutflow);
+        } catch (SQLException e) {
+            System.err.println("保存股票数据时发生错误: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            DBUtils.close(conn, ps, rs); // 修改：关闭连接
+        }
+    }
+
+    private static void saveMinuteData(String code, List<SingleStock> stocks, double totalInflow, double totalOutflow) {
+        // 提交到线程池执行
+        saveDataExecutor.submit(() -> {
+            Connection conn = null;
+            PreparedStatement ps = null;
+            ResultSet rs = null;
+            try {
+                conn = DBUtils.getConnection();
+                SingleStock lastStock = stocks.get(stocks.size() - 1);
+                
+                // 修复totalNetInflowPercent计算
+                double totalNetInflowPercent = 0.0;
+                double totalAmount = totalInflow + totalOutflow;
+                if (totalAmount > 0) {
+                    totalNetInflowPercent = (totalInflow - totalOutflow) / totalAmount * 100;
+                }
+
+                String sql = "INSERT INTO single_stock_data (code, name, current_price, change_amount, change_percent, " +
                         "zhuli_net_inflow, zhuli_net_inflow_percent, total_net_inflow, total_net_inflow_percent, " +
                         "chaodadan_net_inflow, chaodadan_net_inflow_percent, bigdan_net_inflow, bigdan_net_inflow_percent, " +
                         "zhongdan_net_inflow, zhongdan_net_inflow_percent, xiaodan_net_inflow, xiaodan_net_inflow_percent, " +
                         "total_volume) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            
-            ps = conn.prepareStatement(sql);
-            ps.setString(1, stock.getCode());
-            ps.setString(2, stock.getName());
-            ps.setDouble(3, stock.getCurrentPrice());
-            ps.setDouble(4, stock.getChange());
-            ps.setDouble(5, stock.getChangePercent());
-            ps.setDouble(6, stock.getZhuliNetInflow());
-            ps.setDouble(7, stock.getZhuliNetInflowPercent());
-            ps.setDouble(8, totalInflow - totalOutflow); // 总净流入
-            ps.setDouble(9, (totalInflow - totalOutflow) / (totalInflow + totalOutflow) * 100); // 总净流入百分比
-            ps.setDouble(10, stock.getChaodadanNetInflow());
-            ps.setDouble(11, stock.getChaodadanNetInflowPercent());
-            ps.setDouble(12, stock.getBigdanNetInflow());
-            ps.setDouble(13, stock.getBigdanNetInflowPercent());
-            ps.setDouble(14, stock.getZhongdanNetInflow());
-            ps.setDouble(15, stock.getZhongdanNetInflowPercent());
-            ps.setDouble(16, stock.getXiaodanNetInflow());
-            ps.setDouble(17, stock.getXiaodanNetInflowPercent());
-            ps.setDouble(18, totalInflow + totalOutflow); // 总成交量
-            
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            e.printStackTrace();
-        } finally {
-            DBUtils.close(conn, ps, null);
-        }
+
+                ps = conn.prepareStatement(sql);
+                int paramIndex = 1;
+                ps.setString(paramIndex++, code);
+                ps.setString(paramIndex++, lastStock.getName());
+                ps.setDouble(paramIndex++, lastStock.getCurrentPrice());
+                ps.setDouble(paramIndex++, lastStock.getChange());
+                ps.setDouble(paramIndex++, lastStock.getChangePercent());
+                
+                double zhuliSum = stocks.stream()
+                    .mapToDouble(SingleStock::getZhuliNetInflow)
+                    .filter(d -> !Double.isNaN(d))
+                    .sum();
+                ps.setDouble(paramIndex++, zhuliSum);
+                
+                double zhuliPercent = lastStock.getZhuliNetInflowPercent();
+                ps.setDouble(paramIndex++, Double.isNaN(zhuliPercent) ? 0.0 : zhuliPercent);
+                
+                ps.setDouble(paramIndex++, totalInflow - totalOutflow);
+                ps.setDouble(paramIndex++, totalNetInflowPercent);
+                
+                double chaodadanSum = stocks.stream()
+                    .mapToDouble(SingleStock::getChaodadanNetInflow)
+                    .filter(d -> !Double.isNaN(d))
+                    .sum();
+                ps.setDouble(paramIndex++, chaodadanSum);
+                
+                double chaodadanPercent = lastStock.getChaodadanNetInflowPercent();
+                ps.setDouble(paramIndex++, Double.isNaN(chaodadanPercent) ? 0.0 : chaodadanPercent);
+                
+                double bigdanSum = stocks.stream()
+                    .mapToDouble(SingleStock::getBigdanNetInflow)
+                    .filter(d -> !Double.isNaN(d))
+                    .sum();
+                ps.setDouble(paramIndex++, bigdanSum);
+                
+                double bigdanPercent = lastStock.getBigdanNetInflowPercent();
+                ps.setDouble(paramIndex++, Double.isNaN(bigdanPercent) ? 0.0 : bigdanPercent);
+                
+                double zhongdanSum = stocks.stream()
+                    .mapToDouble(SingleStock::getZhongdanNetInflow)
+                    .filter(d -> !Double.isNaN(d))
+                    .sum();
+                ps.setDouble(paramIndex++, zhongdanSum);
+                
+                double zhongdanPercent = lastStock.getZhongdanNetInflowPercent();
+                ps.setDouble(paramIndex++, Double.isNaN(zhongdanPercent) ? 0.0 : zhongdanPercent);
+                
+                double xiaodanSum = stocks.stream()
+                    .mapToDouble(SingleStock::getXiaodanNetInflow)
+                    .filter(d -> !Double.isNaN(d))
+                    .sum();
+                ps.setDouble(paramIndex++, xiaodanSum);
+                
+                double xiaodanPercent = lastStock.getXiaodanNetInflowPercent();
+                ps.setDouble(paramIndex++, Double.isNaN(xiaodanPercent) ? 0.0 : xiaodanPercent);
+                
+                ps.setDouble(paramIndex++, totalAmount);
+
+                ps.executeUpdate();
+
+                // 清空该股票的缓存
+                synchronized (minuteStockCache) {
+                    if (minuteStockCache.containsKey(code)) {
+                        minuteStockCache.get(code).clear();
+                    }
+                }
+                synchronized (minuteInflowCache) {
+                    if (minuteInflowCache.containsKey(code)) {
+                        minuteInflowCache.get(code).clear();
+                    }
+                }
+                synchronized (minuteOutflowCache) {
+                    if (minuteOutflowCache.containsKey(code)) {
+                        minuteOutflowCache.get(code).clear();
+                    }
+                }
+
+            } catch (SQLException e) {
+                log.error("保存数据到数据库时发生错误: {} - {}", code, e.getMessage());
+            } finally {
+                DBUtils.close(conn, ps, rs);
+            }
+        });
     }
 
     // 获取当天历史数据
@@ -859,21 +961,28 @@ public class StockMonitorMain2 {
         } catch (SQLException e) {
             e.printStackTrace();
         } finally {
-            DBUtils.close(conn, ps, rs);
+            DBUtils.close(conn, ps, rs); // 修改：关闭连接
         }
         return new DailyStockData(0, 0);
     }
 
-    // 添加历史数据加载方法
+    // 添加历史数据载方法
     private static void loadHistoricalData() {
         Connection conn = null;
         PreparedStatement ps = null;
         ResultSet rs = null;
         try {
             conn = DBUtils.getConnection();
-            String sql = "SELECT code, current_price, total_net_inflow, total_volume, create_time " +
-                        "FROM single_stock_data WHERE create_time >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) " +
-                        "ORDER BY code, create_time";
+            String sql = "SELECT s1.code, s1.current_price, s1.total_net_inflow, s1.total_volume, s1.create_time " +
+                         "  FROM single_stock_data s1" +
+                         " INNER JOIN (" +
+                         "     SELECT code, DATE(create_time) as date, FLOOR(HOUR(create_time) * 6 + MINUTE(create_time) / 10) as time_slot," +
+                         "         MAX(id) as max_id " +
+                         "     FROM single_stock_data  " +
+                         "     WHERE create_time >= DATE_SUB(CURDATE(), INTERVAL 5 DAY) " +
+                         "     GROUP BY code, DATE(create_time), FLOOR(HOUR(create_time) * 6 + MINUTE(create_time) / 10) " +
+                         " ) s2 ON s1.id = s2.max_id " +
+                         " ORDER BY s1.code ASC, s1.create_time ASC;";
             
             ps = conn.prepareStatement(sql);
             rs = ps.executeQuery();
@@ -892,7 +1001,7 @@ public class StockMonitorMain2 {
                 }
                 
                 double netInflow = rs.getDouble("total_net_inflow");
-                double volume = rs.getDouble("total_volume");
+                //double volume = rs.getDouble("total_volume");
                 // 根据净流入计算流入和流出
                 double inflow = netInflow > 0 ? netInflow : 0;
                 double outflow = netInflow < 0 ? Math.abs(netInflow) : 0;
@@ -907,53 +1016,19 @@ public class StockMonitorMain2 {
         } finally {
             DBUtils.close(conn, ps, rs);
         }
+        log.info("历史数据载入完成, 共载入 {} 支股票数据", historicalData.size());
     }
 
-    private static double getYesterdayNetInflow(String code) {
-        Connection conn = null;
-        PreparedStatement ps = null;
-        ResultSet rs = null;
+    // 添加安全解析double的辅助方法
+    private static double parseDouble(JSONObject json, String key, double defaultValue) {
         try {
-            conn = DBUtils.getConnection();
-            String sql = "SELECT SUM(total_net_inflow) as net_inflow " +
-                        "FROM single_stock_data WHERE code = ? AND DATE(create_time) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)";
-            
-            ps = conn.prepareStatement(sql);
-            ps.setString(1, code);
-            rs = ps.executeQuery();
-            
-            if (rs.next()) {
-                return rs.getDouble("net_inflow");
+            String value = json.getString(key);
+            if (value == null || value.trim().equals("-")) {
+                return defaultValue;
             }
-        } catch (SQLException e) {
-            e.printStackTrace();
-        } finally {
-            DBUtils.close(conn, ps, rs);
+            return json.getDoubleValue(key);
+        } catch (Exception e) {
+            return defaultValue;
         }
-        return 0;
-    }
-
-    private static double getTodayOutflow(String code) {
-        Connection conn = null;
-        PreparedStatement ps = null;
-        ResultSet rs = null;
-        try {
-            conn = DBUtils.getConnection();
-            String sql = "SELECT SUM(CASE WHEN total_net_inflow < 0 THEN ABS(total_net_inflow) ELSE 0 END) as outflow " +
-                        "FROM single_stock_data WHERE code = ? AND DATE(create_time) = CURDATE()";
-            
-            ps = conn.prepareStatement(sql);
-            ps.setString(1, code);
-            rs = ps.executeQuery();
-            
-            if (rs.next()) {
-                return rs.getDouble("outflow");
-            }
-        } catch (SQLException e) {
-            e.printStackTrace();
-        } finally {
-            DBUtils.close(conn, ps, rs);
-        }
-        return 0;
     }
 }

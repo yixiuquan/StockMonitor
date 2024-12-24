@@ -13,20 +13,14 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <maven.compiler.source>11</maven.compiler.source>
-    <maven.compiler.target>11</maven.compiler.target>
-    <javafx.version>11.0.2</javafx.version>
+    <maven.compiler.source>1.8</maven.compiler.source>
+    <maven.compiler.target>1.8</maven.compiler.target>
     <lombok.version>1.18.22</lombok.version>
+    <javafx.version>11.0.2</javafx.version>
   </properties>
 
   <dependencies>
-    <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <version>4.11</version>
-      <scope>test</scope>
-    </dependency>
-    <!-- JavaFX依赖 -->
+    <!-- JavaFX -->
     <dependency>
         <groupId>org.openjfx</groupId>
         <artifactId>javafx-controls</artifactId>
@@ -41,13 +35,20 @@
         <groupId>org.openjfx</groupId>
         <artifactId>javafx-graphics</artifactId>
         <version>${javafx.version}</version>
-        <classifier>win</classifier>
     </dependency>
     <dependency>
         <groupId>org.openjfx</groupId>
         <artifactId>javafx-base</artifactId>
         <version>${javafx.version}</version>
     </dependency>
+
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.11</version>
+      <scope>test</scope>
+    </dependency>
+    
     <!-- fink 相关依赖 -->
     <dependency>
         <groupId>org.apache.flink</groupId>
@@ -63,7 +64,7 @@
     <dependency>
       <groupId>com.alibaba</groupId>
       <artifactId>fastjson</artifactId>
-      <version>1.2.72</version>
+      <version>1.2.83</version>
     </dependency>
     <dependency>
       <groupId>org.apache.commons</groupId>
@@ -73,7 +74,7 @@
     <dependency>
       <groupId>cn.hutool</groupId>
       <artifactId>hutool-all</artifactId>
-      <version>5.3.8</version>
+      <version>5.8.18</version>
     </dependency>
     <!-- Lombok -->
     <dependency>
@@ -90,7 +91,24 @@
     <dependency>
         <groupId>mysql</groupId>
         <artifactId>mysql-connector-java</artifactId>
-        <version>8.0.27</version>
+        <version>5.1.49</version>
+    </dependency>
+    <!-- HikariCP -->
+    <dependency>
+        <groupId>com.zaxxer</groupId>
+        <artifactId>HikariCP</artifactId>
+        <version>3.4.5</version>
+    </dependency>
+    <!-- SLF4J -->
+    <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>1.7.30</version>
+    </dependency>
+    <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-simple</artifactId>
+        <version>1.7.30</version>
     </dependency>
   </dependencies>
 
@@ -102,42 +120,9 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.8.1</version>
         <configuration>
-          <source>${maven.compiler.source}</source>
-          <target>${maven.compiler.target}</target>
-          <encoding>UTF-8</encoding>
-          <annotationProcessorPaths>
-            <path>
-              <groupId>org.projectlombok</groupId>
-              <artifactId>lombok</artifactId>
-              <version>${lombok.version}</version>
-            </path>
-          </annotationProcessorPaths>
-        </configuration>
-      </plugin>
-      
-      <!-- JavaFX插件 -->
-      <plugin>
-        <groupId>org.openjfx</groupId>
-        <artifactId>javafx-maven-plugin</artifactId>
-        <version>0.0.8</version>
-        <configuration>
-          <mainClass>com.stock.ui.StockMonitorUI</mainClass>
-          <options>
-            <option>--add-opens</option>
-            <option>javafx.graphics/javafx.scene=ALL-UNNAMED</option>
-            <option>--add-opens</option>
-            <option>javafx.base/com.sun.javafx.runtime=ALL-UNNAMED</option>
-            <option>--add-opens</option>
-            <option>javafx.controls/com.sun.javafx.scene.control.behavior=ALL-UNNAMED</option>
-            <option>--add-opens</option>
-            <option>javafx.controls/com.sun.javafx.scene.control=ALL-UNNAMED</option>
-            <option>--add-opens</option>
-            <option>javafx.base/com.sun.javafx.binding=ALL-UNNAMED</option>
-            <option>--add-opens</option>
-            <option>javafx.base/com.sun.javafx.event=ALL-UNNAMED</option>
-            <option>--add-opens</option>
-            <option>javafx.graphics/com.sun.javafx.stage=ALL-UNNAMED</option>
-          </options>
+          <source>1.8</source>
+          <target>1.8</target>
+          <encoding>${project.build.sourceEncoding}</encoding>
         </configuration>
       </plugin>
       
@@ -145,11 +130,11 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-assembly-plugin</artifactId>
-        <version>3.3.0</version>
+        <version>3.5.0</version>
         <configuration>
           <archive>
             <manifest>
-              <mainClass>com.stock.StockMonitorMain2</mainClass>
+              <mainClass>com.stock.ui.StockMonitorUI</mainClass>
             </manifest>
           </archive>
           <descriptorRefs>

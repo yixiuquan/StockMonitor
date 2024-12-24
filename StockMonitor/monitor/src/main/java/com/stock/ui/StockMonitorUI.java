@@ -1,5 +1,6 @@
 package com.stock.ui;
 
+import cn.hutool.core.date.StopWatch;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
@@ -12,21 +13,29 @@ import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import com.stock.utils.DBUtils;
 import com.stock.vo.StockSpeed;
+import lombok.extern.slf4j.Slf4j;
+
 import java.sql.*;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Properties;
 import java.io.*;
 import java.util.List;
 
+@Slf4j
 public class StockMonitorUI extends Application {
     
     private TableView<StockData> realTimeTable;
     private TableView<StockData> historyTable;
     private Properties dbProperties;
     private TextField searchField;
+    private TextField pageSizeField;
+    private TabPane tabPane;
+    private ObservableList<StockData> realTimeData = FXCollections.observableArrayList();
     
     @Override
     public void start(Stage primaryStage) {
-        TabPane tabPane = new TabPane();
+        tabPane = new TabPane();
         
         // 实时数据标签页
         Tab realTimeTab = new Tab("实时数据");
@@ -43,7 +52,12 @@ public class StockMonitorUI extends Application {
         dbConfigTab.setClosable(false);
         dbConfigTab.setContent(createDBConfigContent());
         
-        tabPane.getTabs().addAll(realTimeTab, historyTab, dbConfigTab);
+        // 突破五日线标签页
+        Tab breakMA5Tab = new Tab("突破五日线");
+        breakMA5Tab.setClosable(false);
+        breakMA5Tab.setContent(createBreakMA5Content());
+        
+        tabPane.getTabs().addAll(realTimeTab, historyTab, dbConfigTab, breakMA5Tab);
         
         // 使用BorderPane作为根容器
         BorderPane root = new BorderPane();
@@ -79,12 +93,42 @@ public class StockMonitorUI extends Application {
         com.stock.StockMonitorMain2.setUI(this);
     }
     
+    private TableCell<StockData, Number> createMoneyCell() {
+        return new TableCell<StockData, Number>() {
+            @Override
+            protected void updateItem(Number item, boolean empty) {
+                super.updateItem(item, empty);
+                // 清除所有样式类
+                getStyleClass().removeAll("number", "positive", "negative");
+                
+                if (empty || item == null) {
+                    setText(null);
+                } else {
+                    double value = item.doubleValue();
+                    String formattedValue;
+                    if (Math.abs(value) >= 100000000) { // 1亿
+                        formattedValue = String.format("%.2f亿", value / 100000000);
+                    } else {
+                        formattedValue = String.format("%.2f万", value / 10000);
+                    }
+                    setText(formattedValue);
+                    getStyleClass().add("number");
+                    if (value > 0) {
+                        getStyleClass().add("positive");
+                    } else if (value < 0) {
+                        getStyleClass().add("negative");
+                    }
+                }
+            }
+        };
+    }
+    
     private VBox createRealTimeContent() {
-        VBox vbox = new VBox(0);
+        VBox vbox = new VBox(5);
         vbox.setPadding(new Insets(10));
         vbox.setFillWidth(true);
         
-        // 创建表格
+        // 实时数据表格
         realTimeTable = new TableView<>();
         realTimeTable.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
         
@@ -118,7 +162,7 @@ public class StockMonitorUI extends Application {
         nameCol.setCellValueFactory(cellData -> cellData.getValue().nameProperty());
         nameCol.setPrefWidth(120);
         
-        TableColumn<StockData, Number> priceCol = new TableColumn<>("当前价");
+        TableColumn<StockData, Number> priceCol = new TableColumn<>("价格");
         priceCol.setCellValueFactory(cellData -> cellData.getValue().currentPriceProperty());
         priceCol.setCellFactory(column -> new TableCell<StockData, Number>() {
             @Override
@@ -128,34 +172,17 @@ public class StockMonitorUI extends Application {
                     setText(null);
                     getStyleClass().removeAll("number");
                 } else {
-                    setText(String.format("%8.2f", item.doubleValue()));
+                    setText(String.format("%.2f", item.doubleValue()));
                     getStyleClass().add("number");
                 }
             }
         });
-        priceCol.setMinWidth(100);
+        priceCol.setPrefWidth(100);
         
         TableColumn<StockData, Number> inflowCol = new TableColumn<>("净流入");
         inflowCol.setCellValueFactory(cellData -> cellData.getValue().netInflowProperty());
-        inflowCol.setCellFactory(column -> new TableCell<StockData, Number>() {
-            @Override
-            protected void updateItem(Number item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                    getStyleClass().removeAll("number", "positive", "negative");
-                } else {
-                    setText(String.format("%10.2f", item.doubleValue()));
-                    getStyleClass().add("number");
-                    if (item.doubleValue() > 0) {
-                        getStyleClass().add("positive");
-                    } else if (item.doubleValue() < 0) {
-                        getStyleClass().add("negative");
-                    }
-                }
-            }
-        });
-        inflowCol.setMinWidth(120);
+        inflowCol.setCellFactory(column -> createMoneyCell());
+        inflowCol.setPrefWidth(120);
         
         TableColumn<StockData, Number> changeCol = new TableColumn<>("涨跌幅");
         changeCol.setCellValueFactory(cellData -> cellData.getValue().changePercentProperty());
@@ -244,42 +271,13 @@ public class StockMonitorUI extends Application {
         
         TableColumn<StockData, Number> volumeCol = new TableColumn<>("成交量");
         volumeCol.setCellValueFactory(cellData -> cellData.getValue().volumeProperty());
-        volumeCol.setCellFactory(column -> new TableCell<StockData, Number>() {
-            @Override
-            protected void updateItem(Number item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                    getStyleClass().removeAll("number");
-                } else {
-                    setText(String.format("%10.1f", item.doubleValue()));
-                    getStyleClass().add("number");
-                }
-            }
-        });
-        volumeCol.setMinWidth(120);
+        volumeCol.setCellFactory(column -> createMoneyCell());
+        volumeCol.setPrefWidth(120);
         
         TableColumn<StockData, Number> lurkingCol = new TableColumn<>("潜伏差值");
         lurkingCol.setCellValueFactory(cellData -> cellData.getValue().lurkingValueProperty());
-        lurkingCol.setCellFactory(column -> new TableCell<StockData, Number>() {
-            @Override
-            protected void updateItem(Number item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                    getStyleClass().removeAll("number", "positive", "negative");
-                } else {
-                    setText(String.format("%10.2f", item.doubleValue()));
-                    getStyleClass().add("number");
-                    if (item.doubleValue() > 0) {
-                        getStyleClass().add("positive");
-                    } else if (item.doubleValue() < 0) {
-                        getStyleClass().add("negative");
-                    }
-                }
-            }
-        });
-        lurkingCol.setMinWidth(120);
+        lurkingCol.setCellFactory(column -> createMoneyCell());
+        lurkingCol.setPrefWidth(120);
         
         realTimeTable.getColumns().addAll(
             codeCol, nameCol, priceCol, inflowCol, changeCol,
@@ -309,9 +307,38 @@ public class StockMonitorUI extends Application {
         
         Button searchBtn = new Button("搜索");
         searchBtn.getStyleClass().add("search-button");
-        searchBtn.setOnAction(e -> searchHistoryData());
+        searchBtn.setOnAction(e -> searchHistoryData(1)); // 从第1页开始搜索
         
-        searchBox.getChildren().addAll(searchField, searchBtn);
+        // 分页控制区域
+        HBox pageBox = new HBox(10);
+        pageBox.setAlignment(Pos.CENTER);
+
+        Button pageSizeBtn = new Button("页数:");
+        pageSizeField = new TextField();
+        pageSizeField.setMaxWidth(80);
+        pageSizeField.setText(50+"");
+        pageSizeField.getStyleClass().add("search-field");
+        Button prevBtn = new Button("上一页");
+        Label pageLabel = new Label("第1页");
+        Button nextBtn = new Button("下一页");
+        
+        prevBtn.setOnAction(e -> {
+            int currentPage = Integer.parseInt(pageLabel.getText().replaceAll("第|页", ""));
+            if (currentPage > 1) {
+                searchHistoryData(currentPage - 1);
+                pageLabel.setText("第" + (currentPage - 1) + "页");
+            }
+        });
+        
+        nextBtn.setOnAction(e -> {
+            int currentPage = Integer.parseInt(pageLabel.getText().replaceAll("第|页", ""));
+            searchHistoryData(currentPage + 1);
+            pageLabel.setText("第" + (currentPage + 1) + "页");
+        });
+        
+        pageBox.getChildren().addAll(pageSizeBtn, pageSizeField, prevBtn, pageLabel, nextBtn);
+        
+        searchBox.getChildren().addAll( searchField, searchBtn, pageBox);
         
         // 历史数据表格
         historyTable = new TableView<>();
@@ -341,7 +368,7 @@ public class StockMonitorUI extends Application {
         // 创建列并绑定数据
         TableColumn<StockData, String> dateCol = new TableColumn<>("日期");
         dateCol.setCellValueFactory(cellData -> cellData.getValue().createTimeProperty());
-        dateCol.setPrefWidth(150);
+        dateCol.setPrefWidth(180);
         
         TableColumn<StockData, String> codeCol = new TableColumn<>("代码");
         codeCol.setCellValueFactory(cellData -> cellData.getValue().codeProperty());
@@ -368,114 +395,29 @@ public class StockMonitorUI extends Application {
         });
         priceCol.setPrefWidth(100);
         
-        TableColumn<StockData, Number> inflowCol = new TableColumn<>("总净流入");
+        TableColumn<StockData, Number> inflowCol = new TableColumn<>("净流入");
         inflowCol.setCellValueFactory(cellData -> cellData.getValue().netInflowProperty());
-        inflowCol.setCellFactory(column -> new TableCell<StockData, Number>() {
-            @Override
-            protected void updateItem(Number item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                    getStyleClass().removeAll("number", "positive", "negative");
-                } else {
-                    setText(String.format("%10.2f", item.doubleValue()));
-                    getStyleClass().add("number");
-                    if (item.doubleValue() > 0) {
-                        getStyleClass().add("positive");
-                    } else if (item.doubleValue() < 0) {
-                        getStyleClass().add("negative");
-                    }
-                }
-            }
-        });
+        inflowCol.setCellFactory(column -> createMoneyCell());
         inflowCol.setPrefWidth(120);
         
         TableColumn<StockData, Number> inflowDiffCol = new TableColumn<>("较上条净流入");
         inflowDiffCol.setCellValueFactory(cellData -> cellData.getValue().inflowDiffProperty());
-        inflowDiffCol.setCellFactory(column -> new TableCell<StockData, Number>() {
-            @Override
-            protected void updateItem(Number item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                    getStyleClass().removeAll("number", "positive", "negative");
-                } else {
-                    setText(String.format("%10.2f", item.doubleValue()));
-                    getStyleClass().add("number");
-                    if (item.doubleValue() > 0) {
-                        getStyleClass().add("positive");
-                    } else if (item.doubleValue() < 0) {
-                        getStyleClass().add("negative");
-                    }
-                }
-            }
-        });
+        inflowDiffCol.setCellFactory(column -> createMoneyCell());
         inflowDiffCol.setPrefWidth(120);
         
         TableColumn<StockData, Number> mainForceInflowCol = new TableColumn<>("主力净流入");
         mainForceInflowCol.setCellValueFactory(cellData -> cellData.getValue().mainForceInflowProperty());
-        mainForceInflowCol.setCellFactory(column -> new TableCell<StockData, Number>() {
-            @Override
-            protected void updateItem(Number item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                    getStyleClass().removeAll("number", "positive", "negative");
-                } else {
-                    setText(String.format("%10.2f", item.doubleValue()));
-                    getStyleClass().add("number");
-                    if (item.doubleValue() > 0) {
-                        getStyleClass().add("positive");
-                    } else if (item.doubleValue() < 0) {
-                        getStyleClass().add("negative");
-                    }
-                }
-            }
-        });
+        mainForceInflowCol.setCellFactory(column -> createMoneyCell());
         mainForceInflowCol.setPrefWidth(120);
         
         TableColumn<StockData, Number> superLargeInflowCol = new TableColumn<>("超大单净流入");
         superLargeInflowCol.setCellValueFactory(cellData -> cellData.getValue().superLargeInflowProperty());
-        superLargeInflowCol.setCellFactory(column -> new TableCell<StockData, Number>() {
-            @Override
-            protected void updateItem(Number item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                    getStyleClass().removeAll("number", "positive", "negative");
-                } else {
-                    setText(String.format("%10.2f", item.doubleValue()));
-                    getStyleClass().add("number");
-                    if (item.doubleValue() > 0) {
-                        getStyleClass().add("positive");
-                    } else if (item.doubleValue() < 0) {
-                        getStyleClass().add("negative");
-                    }
-                }
-            }
-        });
+        superLargeInflowCol.setCellFactory(column -> createMoneyCell());
         superLargeInflowCol.setPrefWidth(120);
         
         TableColumn<StockData, Number> otherInflowCol = new TableColumn<>("其他净流入");
         otherInflowCol.setCellValueFactory(cellData -> cellData.getValue().otherInflowProperty());
-        otherInflowCol.setCellFactory(column -> new TableCell<StockData, Number>() {
-            @Override
-            protected void updateItem(Number item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                    getStyleClass().removeAll("number", "positive", "negative");
-                } else {
-                    setText(String.format("%10.2f", item.doubleValue()));
-                    getStyleClass().add("number");
-                    if (item.doubleValue() > 0) {
-                        getStyleClass().add("positive");
-                    } else if (item.doubleValue() < 0) {
-                        getStyleClass().add("negative");
-                    }
-                }
-            }
-        });
+        otherInflowCol.setCellFactory(column -> createMoneyCell());
         otherInflowCol.setPrefWidth(120);
         
         TableColumn<StockData, Number> changeCol = new TableColumn<>("涨跌幅");
@@ -507,6 +449,78 @@ public class StockMonitorUI extends Application {
         
         vbox.getChildren().addAll(searchBox, historyTable);
         return vbox;
+    }
+    
+    private void searchHistoryData(int page) {
+
+        String searchText = searchField.getText().trim();
+        if (searchText.isEmpty()) {
+            showAlert(Alert.AlertType.WARNING, "请输入搜索内容");
+            return;
+        }
+
+        int PAGE_SIZE = 50;
+        String pageSizeText = pageSizeField.getText().trim();
+        if (!pageSizeText.isEmpty()) {
+            PAGE_SIZE = Integer.parseInt(pageSizeText);
+        }
+        int offset = (page - 1) * PAGE_SIZE;
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+        StopWatch sw = new StopWatch("获取数据任务");
+        try {
+            conn = DBUtils.getConnection();
+            String sql = "SELECT a.*, " +
+                        "(a.total_net_inflow - IFNULL(b.total_net_inflow, 0)) as inflow_diff, " +
+                        "(a.bigdan_net_inflow + a.zhongdan_net_inflow + a.xiaodan_net_inflow) as other_inflow " +
+                        "FROM single_stock_data a " +
+                        "LEFT JOIN single_stock_data b ON a.code = b.code " +
+                        "AND b.create_time = (SELECT MAX(create_time) FROM single_stock_data c " +
+                        "WHERE c.code = a.code AND c.create_time < a.create_time) " +
+                        "WHERE a.code LIKE ? OR a.name LIKE ? " +
+                        "ORDER BY a.create_time DESC " +
+                        "LIMIT ? OFFSET ?";
+            ps = conn.prepareStatement(sql);
+            ps.setString(1, "%" + searchText + "%");
+            ps.setString(2, "%" + searchText + "%");
+            ps.setInt(3, PAGE_SIZE);
+            ps.setInt(4, offset);
+            sw.start("执行查询");
+            rs = ps.executeQuery();
+            sw.stop();
+            sw.start("循环解析数据");
+            ObservableList<StockData> data = FXCollections.observableArrayList();
+            while (rs.next()) {
+                StockData stockData = new StockData();
+                stockData.setCode(rs.getString("code"));
+                stockData.setName(rs.getString("name"));
+                stockData.setCurrentPrice(rs.getDouble("current_price"));
+                stockData.setNetInflow(rs.getDouble("total_net_inflow"));
+                stockData.setChangePercent(rs.getDouble("change_percent"));
+                stockData.setMainForcePercent(rs.getDouble("zhuli_net_inflow_percent"));
+                stockData.setVolume(rs.getDouble("total_volume"));
+                stockData.setCreateTime(rs.getString("create_time"));
+                
+                // 设置增字段的值
+                stockData.setInflowDiff(rs.getDouble("inflow_diff"));
+                stockData.setMainForceInflow(rs.getDouble("zhuli_net_inflow"));
+                stockData.setSuperLargeInflow(rs.getDouble("chaodadan_net_inflow"));
+                stockData.setOtherInflow(rs.getDouble("other_inflow"));
+                
+                data.add(stockData);
+            }
+            historyTable.setItems(data);
+        } catch (SQLException e) {
+            showAlert(Alert.AlertType.ERROR, "查询失败: " + e.getMessage());
+        } finally {
+            DBUtils.close(conn, ps, rs);
+        }
+        sw.stop();
+        sw.setKeepTaskList(true); //是否构建TaskInfo信息
+        Arrays.stream(sw.getTaskInfo()).forEach(stopWatch -> log.info(stopWatch.getTaskName() + "耗时:" + stopWatch.getTimeMillis() + "ms"));
+        log.info("详细打印：" + sw.prettyPrint());
+        log.info("所有任务总耗时：" + sw.getTotalTimeMillis() + "ms");
     }
     
     private VBox createDBConfigContent() {
@@ -586,7 +600,7 @@ public class StockMonitorUI extends Application {
                                     "-fx-background-color: white; -fx-text-fill: #4a90e2; " +
                                     "-fx-border-color: #4a90e2; -fx-border-radius: 4;";
         
-        // 按钮容器
+        // 按钮器
         HBox buttonBox = new HBox(15);
         buttonBox.setAlignment(Pos.CENTER_LEFT);
         buttonBox.setPadding(new Insets(10, 0, 0, 0));
@@ -680,7 +694,7 @@ public class StockMonitorUI extends Application {
                 "name VARCHAR(50) NOT NULL COMMENT '股票名称'," +
                 "current_price DECIMAL(10,2) NOT NULL COMMENT '当前价格'," +
                 "zhuli_net_inflow DECIMAL(20,2) COMMENT '今日主力净流入'," +
-                "zhuli_net_inflow_percent DECIMAL(10,4) COMMENT '今日主力净流入百分比'," +
+                "zhuli_net_inflow_percent DECIMAL(10,4) COMMENT '今日主力净流百分比'," +
                 "total_net_inflow DECIMAL(20,2) COMMENT '总净流入'," +
                 "total_net_inflow_percent DECIMAL(10,4) COMMENT '总净流入百分比'," +
                 "chaodadan_net_inflow DECIMAL(20,2) COMMENT '超大单净流入'," +
@@ -705,101 +719,8 @@ public class StockMonitorUI extends Application {
             showAlert(Alert.AlertType.INFORMATION, "数据库初始化成功！");
             
         } catch (SQLException e) {
-            showAlert(Alert.AlertType.ERROR, "数据库初始化���败: " + e.getMessage());
+            showAlert(Alert.AlertType.ERROR, "数据库初始化失败: " + e.getMessage());
         }
-    }
-    
-    private void searchHistoryData() {
-        String searchText = searchField.getText().trim();
-        if (searchText.isEmpty()) {
-            showAlert(Alert.AlertType.WARNING, "请输入搜索内容");
-            return;
-        }
-        
-        try {
-            Connection conn = DBUtils.getConnection();
-            String sql = "SELECT a.*, " +
-                        "       (a.total_net_inflow - IFNULL(b.total_net_inflow, 0)) as inflow_diff, " +
-                        "       (a.bigdan_net_inflow + a.zhongdan_net_inflow + a.xiaodan_net_inflow) as other_inflow " +
-                        "FROM single_stock_data a " +
-                        "LEFT JOIN single_stock_data b ON a.code = b.code " +
-                        "   AND b.create_time = (SELECT MAX(create_time) " +
-                        "                        FROM single_stock_data c " +
-                        "                        WHERE c.code = a.code " +
-                        "                          AND c.create_time < a.create_time) " +
-                        "WHERE a.code LIKE ? OR a.name LIKE ? " +
-                        "ORDER BY a.create_time DESC " +
-                        "LIMIT 100";
-            
-            PreparedStatement ps = conn.prepareStatement(sql);
-            ps.setString(1, "%" + searchText + "%");
-            ps.setString(2, "%" + searchText + "%");
-            
-            ResultSet rs = ps.executeQuery();
-            
-            ObservableList<StockData> data = FXCollections.observableArrayList();
-            while (rs.next()) {
-                StockData stockData = new StockData();
-                stockData.setCode(rs.getString("code"));
-                stockData.setName(rs.getString("name"));
-                stockData.setCurrentPrice(rs.getDouble("current_price"));
-                stockData.setNetInflow(rs.getDouble("total_net_inflow"));
-                stockData.setChangePercent(rs.getDouble("change_percent"));
-                stockData.setMainForcePercent(rs.getDouble("zhuli_net_inflow_percent"));
-                stockData.setVolume(rs.getDouble("total_volume"));
-                stockData.setCreateTime(rs.getString("create_time"));
-                
-                // 设置增字段的值
-                stockData.setInflowDiff(rs.getDouble("inflow_diff"));
-                stockData.setMainForceInflow(rs.getDouble("zhuli_net_inflow"));
-                stockData.setSuperLargeInflow(rs.getDouble("chaodadan_net_inflow"));
-                stockData.setOtherInflow(rs.getDouble("other_inflow"));
-                
-                // 计算潜伏差���
-                double yesterdayNetInflow = getYesterdayNetInflow(rs.getString("code"));
-                double todayOutflow = getTodayOutflow(rs.getString("code"));
-                stockData.setLurkingValue(yesterdayNetInflow - todayOutflow);
-                
-                data.add(stockData);
-            }
-            
-            historyTable.setItems(data);
-            
-        } catch (SQLException e) {
-            showAlert(Alert.AlertType.ERROR, "查询失败: " + e.getMessage());
-        }
-    }
-    
-    // 更新实时数据
-    public void updateRealTimeData(List<StockSpeed> speedResults) {
-        Platform.runLater(() -> {
-            ObservableList<StockData> data = FXCollections.observableArrayList();
-            for (StockSpeed result : speedResults) {
-                if (result.getChangePercent() > 9.7 || result.getChangePercent() < -10 || result.getRankUpTrendScore() < 30) {
-                    continue;
-                }
-                
-                StockData stockData = new StockData();
-                stockData.setCode(result.getCode());
-                stockData.setName(result.getName());
-                stockData.setCurrentPrice(result.getCurrentPrice());
-                stockData.setNetInflow(result.getNetSpeed());
-                stockData.setChangePercent(result.getChangePercent());
-                stockData.setMainForcePercent(result.getZhuliNetInflowPercent());
-                stockData.setMomentumScore(result.getMomentumScore());
-                stockData.setUpTrendScore(result.getRankUpTrendScore());
-                stockData.setDownTrendScore(result.getRankDownTrendScore());
-                stockData.setVolume(result.getVolume());
-                
-                // 计算潜伏差值
-                double yesterdayNetInflow = getYesterdayNetInflow(result.getCode());
-                double todayOutflow = getTodayOutflow(result.getCode());
-                stockData.setLurkingValue(yesterdayNetInflow - todayOutflow);
-                
-                data.add(stockData);
-            }
-            realTimeTable.setItems(data);
-        });
     }
     
     private void showAlert(Alert.AlertType type, String message) {
@@ -812,52 +733,287 @@ public class StockMonitorUI extends Application {
         });
     }
     
-    private double getYesterdayNetInflow(String code) {
-        Connection conn = null;
-        PreparedStatement ps = null;
-        ResultSet rs = null;
-        try {
-            conn = DBUtils.getConnection();
-            String sql = "SELECT SUM(total_net_inflow) as net_inflow " +
-                        "FROM single_stock_data WHERE code = ? AND DATE(create_time) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)";
-            
-            ps = conn.prepareStatement(sql);
-            ps.setString(1, code);
-            rs = ps.executeQuery();
-            
-            if (rs.next()) {
-                return rs.getDouble("net_inflow");
+    private VBox createBreakMA5Content() {
+        VBox vbox = new VBox(5);
+        vbox.setPadding(new Insets(10));
+        vbox.setFillWidth(true);
+        
+        // 创建刷新按钮
+        Button refreshBtn = new Button("刷新数据");
+        refreshBtn.setStyle("-fx-font-size: 14px; -fx-min-width: 100px; -fx-min-height: 35px; " +
+                          "-fx-background-color: #4a90e2; -fx-text-fill: white; " +
+                          "-fx-background-radius: 4; -fx-cursor: hand;");
+        refreshBtn.setOnAction(e -> refreshBreakMA5Data());
+        
+        // 创建表格
+        TableView<StockData> breakMA5Table = new TableView<>();
+        breakMA5Table.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
+        
+        // 设置表格填充属性
+        VBox.setVgrow(breakMA5Table, Priority.ALWAYS);
+        breakMA5Table.setMaxHeight(Double.MAX_VALUE);
+        breakMA5Table.setMaxWidth(Double.MAX_VALUE);
+        breakMA5Table.setMinHeight(Region.USE_COMPUTED_SIZE);
+        breakMA5Table.setMinWidth(Region.USE_COMPUTED_SIZE);
+        breakMA5Table.setPrefHeight(Region.USE_COMPUTED_SIZE);
+        breakMA5Table.setPrefWidth(Region.USE_COMPUTED_SIZE);
+        
+        // 设置表格行高
+        breakMA5Table.setFixedCellSize(35);
+        
+        // 设置表格的占位符
+        Label placeholder = new Label("暂无数据");
+        placeholder.setStyle("-fx-font-size: 14px; -fx-text-fill: #666666;");
+        breakMA5Table.setPlaceholder(placeholder);
+        
+        // 创建列
+        TableColumn<StockData, String> codeCol = new TableColumn<>("代码");
+        codeCol.setCellValueFactory(cellData -> cellData.getValue().codeProperty());
+        codeCol.setPrefWidth(100);
+        
+        TableColumn<StockData, String> nameCol = new TableColumn<>("名称");
+        nameCol.setCellValueFactory(cellData -> cellData.getValue().nameProperty());
+        nameCol.setPrefWidth(120);
+        
+        TableColumn<StockData, Number> priceCol = new TableColumn<>("当前价格");
+        priceCol.setCellValueFactory(cellData -> cellData.getValue().currentPriceProperty());
+        priceCol.setCellFactory(column -> new TableCell<StockData, Number>() {
+            @Override
+            protected void updateItem(Number item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    getStyleClass().removeAll("number");
+                } else {
+                    setText(String.format("%8.2f", item.doubleValue()));
+                    getStyleClass().add("number");
+                }
             }
-        } catch (SQLException e) {
-            e.printStackTrace();
-        } finally {
-            DBUtils.close(conn, ps, rs);
-        }
-        return 0;
-    }
+        });
+        priceCol.setPrefWidth(100);
 
-    private double getTodayOutflow(String code) {
+        TableColumn<StockData, Number> changeCol = new TableColumn<>("涨跌幅");
+        changeCol.setCellValueFactory(cellData -> cellData.getValue().changePercentProperty());
+        changeCol.setCellFactory(column -> new TableCell<StockData, Number>() {
+            @Override
+            protected void updateItem(Number item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    getStyleClass().removeAll("number", "positive", "negative");
+                } else {
+                    setText(String.format("%6.2f%%", item.doubleValue()));
+                    getStyleClass().add("number");
+                    if (item.doubleValue() > 0) {
+                        getStyleClass().add("positive");
+                    } else if (item.doubleValue() < 0) {
+                        getStyleClass().add("negative");
+                    }
+                }
+            }
+        });
+        changeCol.setPrefWidth(100);
+
+        TableColumn<StockData, Number> netInflowCol = new TableColumn<>("净流入");
+        netInflowCol.setCellValueFactory(cellData -> cellData.getValue().netInflowProperty());
+        netInflowCol.setCellFactory(column -> new TableCell<StockData, Number>() {
+            @Override
+            protected void updateItem(Number item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    getStyleClass().removeAll("number", "positive", "negative");
+                } else {
+                    setText(String.format("%10.2f", item.doubleValue()));
+                    getStyleClass().add("number");
+                    if (item.doubleValue() > 0) {
+                        getStyleClass().add("positive");
+                    } else if (item.doubleValue() < 0) {
+                        getStyleClass().add("negative");
+                    }
+                }
+            }
+        });
+        netInflowCol.setPrefWidth(120);
+
+        TableColumn<StockData, Number> mainForceCol = new TableColumn<>("主力净流入");
+        mainForceCol.setCellValueFactory(cellData -> cellData.getValue().mainForceInflowProperty());
+        mainForceCol.setCellFactory(column -> new TableCell<StockData, Number>() {
+            @Override
+            protected void updateItem(Number item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    getStyleClass().removeAll("number", "positive", "negative");
+                } else {
+                    setText(String.format("%10.2f", item.doubleValue()));
+                    getStyleClass().add("number");
+                    if (item.doubleValue() > 0) {
+                        getStyleClass().add("positive");
+                    } else if (item.doubleValue() < 0) {
+                        getStyleClass().add("negative");
+                    }
+                }
+            }
+        });
+        mainForceCol.setPrefWidth(120);
+
+        TableColumn<StockData, Number> superLargeCol = new TableColumn<>("超大单净流入");
+        superLargeCol.setCellValueFactory(cellData -> cellData.getValue().superLargeInflowProperty());
+        superLargeCol.setCellFactory(column -> new TableCell<StockData, Number>() {
+            @Override
+            protected void updateItem(Number item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    getStyleClass().removeAll("number", "positive", "negative");
+                } else {
+                    setText(String.format("%10.2f", item.doubleValue()));
+                    getStyleClass().add("number");
+                    if (item.doubleValue() > 0) {
+                        getStyleClass().add("positive");
+                    } else if (item.doubleValue() < 0) {
+                        getStyleClass().add("negative");
+                    }
+                }
+            }
+        });
+        superLargeCol.setPrefWidth(120);
+
+        TableColumn<StockData, Number> otherCol = new TableColumn<>("其他净流入");
+        otherCol.setCellValueFactory(cellData -> cellData.getValue().otherInflowProperty());
+        otherCol.setCellFactory(column -> new TableCell<StockData, Number>() {
+            @Override
+            protected void updateItem(Number item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    getStyleClass().removeAll("number", "positive", "negative");
+                } else {
+                    setText(String.format("%10.2f", item.doubleValue()));
+                    getStyleClass().add("number");
+                    if (item.doubleValue() > 0) {
+                        getStyleClass().add("positive");
+                    } else if (item.doubleValue() < 0) {
+                        getStyleClass().add("negative");
+                    }
+                }
+            }
+        });
+        otherCol.setPrefWidth(120);
+        
+        breakMA5Table.getColumns().addAll(
+            codeCol, nameCol, priceCol, changeCol, netInflowCol,
+            mainForceCol, superLargeCol, otherCol
+        );
+        
+        vbox.getChildren().addAll(refreshBtn, breakMA5Table);
+        
+        return vbox;
+    }
+    
+    private void refreshBreakMA5Data() {
+        String sql = "";
         Connection conn = null;
-        PreparedStatement ps = null;
+        Statement stmt = null;
         ResultSet rs = null;
         try {
             conn = DBUtils.getConnection();
-            String sql = "SELECT SUM(CASE WHEN total_net_inflow < 0 THEN ABS(total_net_inflow) ELSE 0 END) as outflow " +
-                        "FROM single_stock_data WHERE code = ? AND DATE(create_time) = CURDATE()";
             
-            ps = conn.prepareStatement(sql);
-            ps.setString(1, code);
-            rs = ps.executeQuery();
+            // 修改SQL查询，使用正确的关联方式
+            sql = 
+                "SELECT t.code, t.name, t.current_price, t.change_percent, t.total_net_inflow, t.zhuli_net_inflow, t.chaodadan_net_inflow, t.other_inflow  " +
+                  "FROM (SELECT s1.code, s1.name, s1.current_price, s1.change_percent, s1.total_net_inflow, s1.zhuli_net_inflow, s1.chaodadan_net_inflow, " +
+                  "        (s1.bigdan_net_inflow + s1.zhongdan_net_inflow + s1.xiaodan_net_inflow) AS other_inflow, " +
+                  "        (SELECT AVG(current_price) FROM single_stock_data WHERE code = s1.code AND create_time <= s1.create_time ORDER BY create_time DESC LIMIT 5 ) AS ma5  " +
+                  "    FROM single_stock_data s1 " +
+                  "   INNER JOIN (SELECT code, MAX(create_time) AS max_time FROM single_stock_data GROUP BY code) latest ON s1.code = latest.code  " +
+                  "        AND s1.create_time = latest.max_time  " +
+                  "    ) t  " +
+                  "WHERE " +
+                  "    t.current_price > t.ma5  " +
+                  "    AND EXISTS ( " +
+                  "    SELECT 1  " +
+                  "    FROM single_stock_data s3  " +
+                  "    WHERE " +
+                  "        s3.code = t.code  " +
+                  "        AND s3.create_time < ( " +
+                  "            SELECT MAX(create_time)  " +
+                  "            FROM single_stock_data  " +
+                  "            WHERE code = t.code " +
+                  "        )  " +
+                  "        AND s3.current_price < ( " +
+                  "            SELECT AVG(current_price)  " +
+                  "            FROM single_stock_data  " +
+                  "            WHERE  " +
+                  "                code = s3.code  " +
+                  "                AND create_time <= s3.create_time  " +
+                  "            ORDER BY create_time DESC  " +
+                  "            LIMIT 5 " +
+                  "        )  " +
+                  "    ORDER BY s3.create_time DESC  " +
+                  "    LIMIT 1  " +
+                  "    )  " +
+                  "ORDER BY t.code";
             
-            if (rs.next()) {
-                return rs.getDouble("outflow");
+            stmt = conn.createStatement();
+            rs = stmt.executeQuery(sql);
+            
+            ObservableList<StockData> data = FXCollections.observableArrayList();
+            while (rs.next()) {
+                StockData stockData = new StockData();
+                stockData.setCode(rs.getString("code"));
+                stockData.setName(rs.getString("name"));
+                stockData.setCurrentPrice(rs.getDouble("current_price"));
+                stockData.setChangePercent(rs.getDouble("change_percent"));
+                stockData.setNetInflow(rs.getDouble("total_net_inflow"));
+                stockData.setMainForceInflow(rs.getDouble("zhuli_net_inflow"));
+                stockData.setSuperLargeInflow(rs.getDouble("chaodadan_net_inflow"));
+                stockData.setOtherInflow(rs.getDouble("other_inflow"));
+                data.add(stockData);
             }
+            
+            // 获取表格引用并更新数据
+            TableView<StockData> breakMA5Table = (TableView<StockData>) ((VBox) tabPane.getTabs().get(3).getContent()).getChildren().get(1);
+            breakMA5Table.setItems(data);
+            
         } catch (SQLException e) {
-            e.printStackTrace();
+            showAlert(Alert.AlertType.ERROR, "查询失败: " + e.getMessage());
+            log.error("查询失败：{}", sql);
+        } catch (Exception e) {
+            showAlert(Alert.AlertType.ERROR, "系统错误: " + e.getMessage());
+            log.error("系统错误：", e);
         } finally {
-            DBUtils.close(conn, ps, rs);
+            DBUtils.close(conn, stmt, rs);
         }
-        return 0;
+    }
+    
+    public void updateRealTimeData(List<StockSpeed> speedResults) {
+        // 在后台线程中准备数据
+        List<StockData> newData = new ArrayList<>();
+        for (StockSpeed result : speedResults) {
+            StockData stockData = new StockData();
+            stockData.setCode(result.getCode());
+            stockData.setName(result.getName());
+            stockData.setCurrentPrice(result.getCurrentPrice());
+            stockData.setNetInflow(result.getZhuliNetInflow());
+            stockData.setChangePercent(result.getChangePercent());
+            stockData.setMainForcePercent(result.getZhuliNetInflowPercent());
+            stockData.setMomentumScore(result.getMomentumScore());
+            stockData.setUpTrendScore(result.getRankUpTrendScore());
+            stockData.setDownTrendScore(result.getRankDownTrendScore());
+            stockData.setVolume(result.getVolume());
+            newData.add(stockData);
+        }
+        
+        // 只在UI线程中执行最终的更新
+        Platform.runLater(() -> {
+            realTimeData.clear();
+            realTimeData.addAll(newData);
+            if (realTimeTable.getItems() != realTimeData) {
+                realTimeTable.setItems(realTimeData);
+            }
+        });
     }
     
     public static void main(String[] args) {
