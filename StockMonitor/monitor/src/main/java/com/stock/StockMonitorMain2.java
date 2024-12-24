@@ -966,7 +966,10 @@ public class StockMonitorMain2 {
         return new DailyStockData(0, 0);
     }
 
-    // 添加历史数据载方法
+    /**
+     * 加载历史股票数据的方法
+     * 该方法从数据库中查询最近五天的股票数据，按股票代码和时间分组，并计算每支股票的流入和流出量
+     */
     private static void loadHistoricalData() {
         Connection conn = null;
         PreparedStatement ps = null;
@@ -974,22 +977,22 @@ public class StockMonitorMain2 {
         try {
             conn = DBUtils.getConnection();
             String sql = "SELECT s1.code, s1.current_price, s1.total_net_inflow, s1.total_volume, s1.create_time " +
-                         "  FROM single_stock_data s1" +
-                         " INNER JOIN (" +
-                         "     SELECT code, DATE(create_time) as date, FLOOR(HOUR(create_time) * 6 + MINUTE(create_time) / 10) as time_slot," +
-                         "         MAX(id) as max_id " +
-                         "     FROM single_stock_data  " +
-                         "     WHERE create_time >= DATE_SUB(CURDATE(), INTERVAL 5 DAY) " +
-                         "     GROUP BY code, DATE(create_time), FLOOR(HOUR(create_time) * 6 + MINUTE(create_time) / 10) " +
-                         " ) s2 ON s1.id = s2.max_id " +
-                         " ORDER BY s1.code ASC, s1.create_time ASC;";
-            
+                    "  FROM single_stock_data s1" +
+                    " INNER JOIN (" +
+                    "     SELECT code, DATE(create_time) as date, FLOOR(HOUR(create_time) * 6 + MINUTE(create_time) / 10) as time_slot," +
+                    "         MAX(id) as max_id " +
+                    "     FROM single_stock_data  " +
+                    "     WHERE create_time >= DATE_SUB(CURDATE(), INTERVAL 5 DAY) " +
+                    "     GROUP BY code, DATE(create_time), FLOOR(HOUR(create_time) * 6 + MINUTE(create_time) / 10) " +
+                    " ) s2 ON s1.id = s2.max_id " +
+                    " ORDER BY s1.code ASC, s1.create_time ASC;";
+
             ps = conn.prepareStatement(sql);
             rs = ps.executeQuery();
-            
+
             String currentCode = null;
             List<DailyStockData> dataList = null;
-            
+
             while (rs.next()) {
                 String code = rs.getString("code");
                 if (!code.equals(currentCode)) {
@@ -999,13 +1002,13 @@ public class StockMonitorMain2 {
                     currentCode = code;
                     dataList = new ArrayList<>();
                 }
-                
+
                 double netInflow = rs.getDouble("total_net_inflow");
                 //double volume = rs.getDouble("total_volume");
                 // 根据净流入计算流入和流出
                 double inflow = netInflow > 0 ? netInflow : 0;
                 double outflow = netInflow < 0 ? Math.abs(netInflow) : 0;
-                
+
                 dataList.add(new DailyStockData(inflow, outflow));
             }
             if (currentCode != null) {

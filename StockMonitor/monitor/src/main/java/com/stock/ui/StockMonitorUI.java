@@ -57,7 +57,12 @@ public class StockMonitorUI extends Application {
         breakMA5Tab.setClosable(false);
         breakMA5Tab.setContent(createBreakMA5Content());
         
-        tabPane.getTabs().addAll(realTimeTab, historyTab, dbConfigTab, breakMA5Tab);
+        // 自定义查询标签页
+        Tab customQueryTab = new Tab("自定义查询");
+        customQueryTab.setClosable(false);
+        customQueryTab.setContent(createCustomQueryContent());
+        
+        tabPane.getTabs().addAll(realTimeTab, historyTab, dbConfigTab, breakMA5Tab, customQueryTab);
         
         // 使用BorderPane作为根容器
         BorderPane root = new BorderPane();
@@ -1014,6 +1019,228 @@ public class StockMonitorUI extends Application {
                 realTimeTable.setItems(realTimeData);
             }
         });
+    }
+    
+    private VBox createCustomQueryContent() {
+        VBox vbox = new VBox(5);
+        vbox.setPadding(new Insets(10));
+        vbox.setFillWidth(true);
+
+        // 创建查询条件区域
+        GridPane queryPane = new GridPane();
+        queryPane.setHgap(10);
+        queryPane.setVgap(10);
+        queryPane.setPadding(new Insets(0, 0, 10, 0));
+
+        // 股票名称
+        Label nameLabel = new Label("股票名称:");
+        TextField nameField = new TextField();
+        nameField.setPromptText("输入股票名称");
+        queryPane.add(nameLabel, 0, 0);
+        queryPane.add(nameField, 1, 0);
+
+        // 股票代码
+        Label codeLabel = new Label("股票代码:");
+        TextField codeField = new TextField();
+        codeField.setPromptText("输入股票代码");
+        queryPane.add(codeLabel, 2, 0);
+        queryPane.add(codeField, 3, 0);
+
+        // 净流入
+        Label inflowLabel = new Label("净流入(千万)≥");
+        TextField inflowField = new TextField();
+        inflowField.setPromptText("输入净流入");
+        queryPane.add(inflowLabel, 0, 1);
+        queryPane.add(inflowField, 1, 1);
+
+        // 涨跌幅范围
+        Label changeLabel = new Label("涨跌幅范围:");
+        TextField changeMinField = new TextField();
+        changeMinField.setPromptText("最小值");
+        TextField changeMaxField = new TextField();
+        changeMaxField.setPromptText("最大值");
+        queryPane.add(changeLabel, 2, 1);
+        HBox changeBox = new HBox(5);
+        changeBox.getChildren().addAll(changeMinField, new Label("至"), changeMaxField);
+        queryPane.add(changeBox, 3, 1);
+
+        // 查询按钮
+        Button queryButton = new Button("查询");
+        queryButton.setOnAction(e -> {
+            String name = nameField.getText().trim();
+            String code = codeField.getText().trim();
+            String inflow = inflowField.getText().trim();
+            String changeMin = changeMinField.getText().trim();
+            String changeMax = changeMaxField.getText().trim();
+            
+            executeCustomQuery(name, code, inflow, changeMin, changeMax);
+        });
+        queryPane.add(queryButton, 4, 1);
+
+        // 创建结果表格
+        TableView<StockData> resultTable = new TableView<>();
+        resultTable.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
+        VBox.setVgrow(resultTable, Priority.ALWAYS);
+
+        // 添加列（与历史数据表格相同的列）
+        TableColumn<StockData, String> dateCol = new TableColumn<>("日期");
+        dateCol.setCellValueFactory(cellData -> cellData.getValue().createTimeProperty());
+        dateCol.setPrefWidth(180);
+        
+        TableColumn<StockData, String> codeCol = new TableColumn<>("代码");
+        codeCol.setCellValueFactory(cellData -> cellData.getValue().codeProperty());
+        codeCol.setPrefWidth(100);
+        
+        TableColumn<StockData, String> nameCol = new TableColumn<>("名称");
+        nameCol.setCellValueFactory(cellData -> cellData.getValue().nameProperty());
+        nameCol.setPrefWidth(120);
+        
+        TableColumn<StockData, Number> priceCol = new TableColumn<>("价格");
+        priceCol.setCellValueFactory(cellData -> cellData.getValue().currentPriceProperty());
+        priceCol.setCellFactory(column -> new TableCell<StockData, Number>() {
+            @Override
+            protected void updateItem(Number item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    getStyleClass().removeAll("number");
+                } else {
+                    setText(String.format("%8.2f", item.doubleValue()));
+                    getStyleClass().add("number");
+                }
+            }
+        });
+        priceCol.setPrefWidth(100);
+        
+        TableColumn<StockData, Number> inflowCol = new TableColumn<>("净流入");
+        inflowCol.setCellValueFactory(cellData -> cellData.getValue().netInflowProperty());
+        inflowCol.setCellFactory(column -> createMoneyCell());
+        inflowCol.setPrefWidth(120);
+        
+        TableColumn<StockData, Number> mainForceInflowCol = new TableColumn<>("主力净流入");
+        mainForceInflowCol.setCellValueFactory(cellData -> cellData.getValue().mainForceInflowProperty());
+        mainForceInflowCol.setCellFactory(column -> createMoneyCell());
+        mainForceInflowCol.setPrefWidth(120);
+        
+        TableColumn<StockData, Number> superLargeInflowCol = new TableColumn<>("超大单净流入");
+        superLargeInflowCol.setCellValueFactory(cellData -> cellData.getValue().superLargeInflowProperty());
+        superLargeInflowCol.setCellFactory(column -> createMoneyCell());
+        superLargeInflowCol.setPrefWidth(120);
+        
+        TableColumn<StockData, Number> otherInflowCol = new TableColumn<>("其他净流入");
+        otherInflowCol.setCellValueFactory(cellData -> cellData.getValue().otherInflowProperty());
+        otherInflowCol.setCellFactory(column -> createMoneyCell());
+        otherInflowCol.setPrefWidth(120);
+        
+        TableColumn<StockData, Number> changeCol = new TableColumn<>("涨跌幅");
+        changeCol.setCellValueFactory(cellData -> cellData.getValue().changePercentProperty());
+        changeCol.setCellFactory(column -> new TableCell<StockData, Number>() {
+            @Override
+            protected void updateItem(Number item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    getStyleClass().removeAll("number", "positive", "negative");
+                } else {
+                    setText(String.format("%6.2f%%", item.doubleValue()));
+                    getStyleClass().add("number");
+                    if (item.doubleValue() > 0) {
+                        getStyleClass().add("positive");
+                    } else if (item.doubleValue() < 0) {
+                        getStyleClass().add("negative");
+                    }
+                }
+            }
+        });
+        changeCol.setPrefWidth(100);
+
+        resultTable.getColumns().addAll(
+            dateCol, codeCol, nameCol, priceCol, inflowCol,
+            mainForceInflowCol, superLargeInflowCol, otherInflowCol, changeCol
+        );
+
+        vbox.getChildren().addAll(queryPane, resultTable);
+        return vbox;
+    }
+
+    private void executeCustomQuery(String name, String code, String inflow, String changeMin, String changeMax) {
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+        try {
+            StringBuilder sql = new StringBuilder(
+                "SELECT a.*, " +
+                "(a.bigdan_net_inflow + a.zhongdan_net_inflow + a.xiaodan_net_inflow) as other_inflow " +
+                "FROM single_stock_data a " +
+                "INNER JOIN (" +
+                "    SELECT code, MAX(create_time) as max_time " +
+                "    FROM single_stock_data " +
+                "    WHERE create_time < DATE_SUB(NOW(), INTERVAL 20 SECOND) " +
+                "    GROUP BY code" +
+                ") b ON a.code = b.code AND a.create_time = b.max_time " +
+                "WHERE 1=1 "
+            );
+
+            List<Object> params = new ArrayList<>();
+
+            if (!name.isEmpty()) {
+                sql.append("AND a.name LIKE ? ");
+                params.add("%" + name + "%");
+            }
+            if (!code.isEmpty()) {
+                sql.append("AND a.code = ? ");
+                params.add(code);
+            }
+            if (!inflow.isEmpty()) {
+                sql.append("AND a.total_net_inflow >= ? ");
+                params.add(Double.parseDouble(inflow) * 10000000); // 转换为万为单位
+            }
+            if (!changeMin.isEmpty()) {
+                sql.append("AND a.change_percent >= ? ");
+                params.add(Double.parseDouble(changeMin));
+            }
+            if (!changeMax.isEmpty()) {
+                sql.append("AND a.change_percent <= ? ");
+                params.add(Double.parseDouble(changeMax));
+            }
+
+            conn = DBUtils.getConnection();
+            ps = conn.prepareStatement(sql.toString());
+
+            // 设置参数
+            for (int i = 0; i < params.size(); i++) {
+                ps.setObject(i + 1, params.get(i));
+            }
+
+            rs = ps.executeQuery();
+            ObservableList<StockData> data = FXCollections.observableArrayList();
+
+            while (rs.next()) {
+                StockData stockData = new StockData();
+                stockData.setCode(rs.getString("code"));
+                stockData.setName(rs.getString("name"));
+                stockData.setCurrentPrice(rs.getDouble("current_price"));
+                stockData.setNetInflow(rs.getDouble("total_net_inflow"));
+                stockData.setChangePercent(rs.getDouble("change_percent"));
+                stockData.setMainForceInflow(rs.getDouble("zhuli_net_inflow"));
+                stockData.setSuperLargeInflow(rs.getDouble("chaodadan_net_inflow"));
+                stockData.setOtherInflow(rs.getDouble("other_inflow"));
+                stockData.setCreateTime(rs.getString("create_time"));
+                data.add(stockData);
+            }
+
+            // 获取表格引用并更新数据
+            TableView<StockData> resultTable = (TableView<StockData>) 
+                ((VBox) tabPane.getTabs().get(4).getContent()).getChildren().get(1);
+            resultTable.setItems(data);
+
+        } catch (SQLException e) {
+            showAlert(Alert.AlertType.ERROR, "查询失败: " + e.getMessage());
+        } catch (NumberFormatException e) {
+            showAlert(Alert.AlertType.ERROR, "请输入有效的数字");
+        } finally {
+            DBUtils.close(conn, ps, rs);
+        }
     }
     
     public static void main(String[] args) {
